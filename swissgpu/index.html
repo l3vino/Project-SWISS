@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Switzerland — live terrain</title>
+<meta name="description" content="A streaming 3D reconstruction of Switzerland from swisstopo open data, rendered with WebGPU.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230d1620'/%3E%3Cpath d='M4 23l7-11 5 7 3-4 9 8z' fill='%23eaf0f5'/%3E%3Cpath d='M11 12l5 7-4 4-8-1z' fill='%23e23b2e'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/ui.css">
+<link rel="preload" href="wasm/core.wasm" as="fetch" type="application/wasm" crossorigin>
+</head>
+<body>
+
+<canvas id="view"></canvas>
+
+<div id="ui">
+
+  <div class="search glass" role="search">
+    <div class="search__field">
+      <svg class="search__icon" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M10.8 10.8 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>
+      <input id="search-input" class="search__input" type="search" autocomplete="off"
+             spellcheck="false" placeholder="Search a place"
+             role="combobox" aria-expanded="false" aria-controls="search-results"
+             aria-label="Search a place">
+      <div class="search__scope" id="search-scope" role="group" aria-label="Search scope"></div>
+    </div>
+    <ul id="search-results" class="search__results glass" role="listbox" hidden></ul>
+  </div>
+
+  <button id="gear" class="gear glass" aria-expanded="false" aria-controls="settings"
+          aria-label="Settings" title="Settings">
+    <svg viewBox="0 0 20 20" width="17" height="17" fill="none" aria-hidden="true">
+      <circle cx="10" cy="10" r="2.7" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10 2.6v2M10 15.4v2M17.4 10h-2M4.6 10h-2M15.2 4.8l-1.4 1.4M6.2 13.8l-1.4 1.4M15.2 15.2l-1.4-1.4M6.2 6.2 4.8 4.8"
+            stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+  </button>
+
+  <div id="readout" class="readout glass" aria-live="off"></div>
+
+  <p id="lock-hint" class="lock-hint">Click to fly · <b>WASD</b> move · <b>Space</b> up · <b>Shift</b> down · <b>scroll</b> speed · <b>Esc</b> release</p>
+
+  <p id="attribution" class="attribution"></p>
+
+</div>
+
+<div id="crosshair" class="crosshair" hidden aria-hidden="true"></div>
+
+<aside id="settings" class="panel" data-open="false" aria-hidden="true" aria-label="Settings">
+  <header class="panel__head">
+    <h2 class="panel__title">Settings</h2>
+    <button id="panel-close" class="panel__close" aria-label="Close settings">&times;</button>
+  </header>
+  <div id="panel-body" class="panel__body"></div>
+</aside>
+
+<div id="boot" class="boot">
+  <div class="boot__inner">
+    <h1 class="boot__name">Switzerland</h1>
+    <p class="boot__sub">Streaming terrain from swisstopo</p>
+    <ul id="boot-steps" class="boot__steps"></ul>
+    <div id="boot-error" class="boot__error" hidden></div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
