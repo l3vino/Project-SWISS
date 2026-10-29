@@ -1,0 +1,598 @@
+/* solid.js — what a body bumps into and stands on, besides the ground.
+ *
+ * Buildings and bridges are solid, and they are solid exactly where they are
+ * drawn: the triangles come from the tiles the streamers selected around the
+ * view's focus, each with the collision grid built for it on a decode thread
+ * (wasm/src/solid.c). Once a frame, the triangles within reach of the camera
+ * are gathered into one short list in a local frame at the eye, metres east,
+ * north and up, and every question the physics steps ask during that frame
+ * is answered from the list:
+ *
+ *   floor      the highest surface under a point that can be stood on, below
+ *              a given height (the top of a step)
+ *   ceiling    the lowest surface over a point, above a given height
+ *   resolve    how far an upright cylinder overlapping walls must move to be
+ *              clear of them, and in which directions it was pushed
+ *   sweep      resolve along a move in short steps, so speed cannot carry a
+ *              body through a wall between two steps
+ *   clearAt    whether a body standing somewhere is outside every building
+ *              and clear of every wall, and nearestClear, the closest such
+ *              place
+ *   highest    the top of anything near a point, and overhead, whether
+ *              anything is above it: what a flight starting or landing
+ *              there keeps clear of (engine/flight), cable cars' ropes and
+ *              pylons included, though nothing else here touches them
+ *
+ * Walls are whatever is too steep to stand on. They only count between the
+ * height a step can climb and the top of the head, so a kerb or a stair is
+ * climbed rather than bumped into, and a roof edge stops holding you back once
+ * your feet are above it. And only where they are beside the body: a wall
+ * triangle is first cut down to the part over the body's footprint, and it
+ * is that part's height that counts. The side of a rope running up a slope,
+ * or of a bridge rising along a valley, is one long triangle spanning a
+ * hundred metres of height from end to end; taken whole it would stand as an
+ * invisible curtain under and over the rope along its whole length.
+ */
+
+import { geodeticToEcef, enuBasis, radiiAt, DEG } from '../../core/math.js';
+
+/* Floats per gathered triangle: corners a, b, c; unit normal; footprint box
+ * min x, min y, max x, max y; lowest and highest z. */
+const REC = 18;
+/* Surfaces steeper than this are never floors or ceilings, whatever the
+ * walkable limit, and walls hardly ever lean more. */
+const CEILING_MIN_NZ = 0.1;
+/* Walls lower than this above the feet do not stop a body: it steps up. */
+const STEP_CLEARANCE = 0.4;
+/* Floats per gathered rope piece: two ends, and its radius. Ropes and
+ * pylons are not solid (they are drawn as wires, and you walk and fly
+ * through them); only a flight's highest and overhead questions see them. */
+const LINE = 7;
+/* Floats per piece in a tile's cable data (formats/lines.js, ROPE_FLOATS):
+ * one end, its radius, the other end, its shade. */
+const PIECE = 8;
+
+/* Gathering (prepare) marks each triangle it takes with the call's stamp,
+ * in the tile's own array (`stamps`, so a triangle filed in several grid
+ * cells is taken once), and that array is shared by every SolidWorld: the
+ * physics round the camera, a flight's start and its landing. So the stamps
+ * come from one counter for all of them, and one world's marks never pass
+ * for another's. Until Stage 5.13b each world counted on its own: a
+ * flight's start and its landing search, prepared a few times each, reached
+ * the same numbers, and the landing search skipped every triangle the start
+ * had just taken, so a walker beside a house who picked it saw no house
+ * there and landed inside it (his words on 5.12b: "I chose an address and
+ * flight correctly landed besides the wall of the building, then I walked a
+ * couple of meters away to test the short hops, and then it landed inside
+ * the building"; reproduced in the stand-in town, scenarios/ui.mjs check 9b). */
+let STAMP = 0;
+
+export class SolidWorld {
+  constructor(tilesets) {
+    this.tilesets = tilesets;
+    this.walkCos = Math.cos(45 * DEG);    // steepest floor, as the cosine of its slope
+    this.tris = new Float32Array(REC * 512);
+    this.count = 0;
+    this.lines = new Float32Array(LINE * 64);
+    this.lineCount = 0;
+    this.origin = { lon: 0, lat: 0, height: 0 };
+    this.mPerDegLon = 1;
+    this.mPerDegLat = 1;
+    this.stamp = 0;
+    this.stats = { tiles: 0, triangles: 0 };
+    this.originEcef = new Float64Array(3);
+    this.east = new Float64Array(3);
+    this.north = new Float64Array(3);
+    this.up = new Float64Array(3);
+    this.radii = { meridian: 0, primeVertical: 0 };   // scratch, reused every frame
+  }
+
+  /** Something to collide with near the camera this frame. */
+  get active() { return this.count > 0; }
+
+  /** Nothing is solid this frame. */
+  clear() { this.count = 0; this.lineCount = 0; this.stats.tiles = 0; this.stats.triangles = 0; }
+
+  /**
+   * Whether every enabled layer has loaded what the focus covers, with its
+   * collision copy, as of the view's current version.
+   */
+  settled(view) {
+    for (const t of this.tilesets) {
+      if (!t.enabled || t.status === 'failed') continue;
+      if (!t.root || t.dirty || t.viewVersion !== view.version || t.focusPending > 0) return false;
+    }
+    return true;
+  }
+
+  /** Where the steepest standable slope lies, in radians. */
+  setMaxSlope(radians) { this.walkCos = Math.cos(radians); }
+
+  /**
+   * Gathers the triangles within `reach` metres (horizontally) of a point,
+   * normally the eye, into the local frame queries use; with `lines`, cable
+   * cars' rope pieces too (for a flight's questions only).
+   */
+  prepare(lon, lat, height, reach, { lines = false } = {}) {
+    this.count = 0;
+    this.lineCount = 0;
+    this.stats.tiles = 0;
+    const o = this.origin;
+    o.lon = lon; o.lat = lat; o.height = height;
+    const { meridian, primeVertical } = radiiAt(lat, this.radii);
+    this.mPerDegLat = (meridian + height) * DEG;
+    this.mPerDegLon = (primeVertical + height) * Math.cos(lat * DEG) * DEG;
+    geodeticToEcef(lon, lat, height, this.originEcef);
+    enuBasis(lon, lat, this.east, this.north, this.up);
+    this.stamp = STAMP = (STAMP + 1) >>> 0 || 1;
+    for (const t of this.tilesets) {
+      if (!t.enabled) continue;
+      for (const node of t.focusNodes) if (node.solid && node.gpu) this.#gather(node, reach);
+      if (lines && t.cableNodes) for (const node of t.cableNodes) if (node.gpu?.cables?.lines) this.#gatherLines(node, reach);
+    }
+    this.stats.triangles = this.count;
+  }
+
+  /** Metres east, north and up of the gathered frame's origin. */
+  toLocal(lon, lat, height, out) {
+    const o = this.origin;
+    out.x = (lon - o.lon) * this.mPerDegLon;
+    out.y = (lat - o.lat) * this.mPerDegLat;
+    out.z = height - o.height;
+    return out;
+  }
+
+  /* Tile frame to local frame: q = M p + b, M = Rl^T Rt, b = Rl^T (Ot - Ol),
+   * into `this.frameOf` as m00..m22, b0..b2. */
+  #frame(g) {
+    const E = this.east, N = this.north, U = this.up, O = this.originEcef, f = this.frameOf;
+    const te = g.east, tn = g.north, tu = g.up;
+    f.m00 = dot(E, te); f.m01 = dot(E, tn); f.m02 = dot(E, tu);
+    f.m10 = dot(N, te); f.m11 = dot(N, tn); f.m12 = dot(N, tu);
+    f.m20 = dot(U, te); f.m21 = dot(U, tn); f.m22 = dot(U, tu);
+    const ox = g.origin[0] - O[0], oy = g.origin[1] - O[1], oz = g.origin[2] - O[2];
+    f.b0 = E[0] * ox + E[1] * oy + E[2] * oz;
+    f.b1 = N[0] * ox + N[1] * oy + N[2] * oz;
+    f.b2 = U[0] * ox + U[1] * oy + U[2] * oz;
+    return f;
+  }
+
+  frameOf = { m00: 0, m01: 0, m02: 0, m10: 0, m11: 0, m12: 0, m20: 0, m21: 0, m22: 0, b0: 0, b1: 0, b2: 0 };
+
+  /* A cable tile's rope pieces within reach, into the local frame. */
+  #gatherLines(node, reach) {
+    const L = node.gpu.cables.lines, f = this.#frame(node.gpu), r = reach + 1;
+    for (let k = 0; k + PIECE <= L.length; k += PIECE) {
+      if (this.lineCount * LINE + LINE > this.lines.length) {
+        const next = new Float32Array(this.lines.length * 2);
+        next.set(this.lines);
+        this.lines = next;
+      }
+      const o = this.lineCount * LINE, T = this.lines;
+      // A piece is one end, its radius, the other end and its shade.
+      for (let j = 0; j < 2; j++) {
+        const x = L[k + j * 4], y = L[k + j * 4 + 1], z = L[k + j * 4 + 2];
+        T[o + j * 3] = f.m00 * x + f.m01 * y + f.m02 * z + f.b0;
+        T[o + j * 3 + 1] = f.m10 * x + f.m11 * y + f.m12 * z + f.b1;
+        T[o + j * 3 + 2] = f.m20 * x + f.m21 * y + f.m22 * z + f.b2;
+      }
+      T[o + 6] = L[k + 3];
+      if (Math.min(T[o], T[o + 3]) > r || Math.max(T[o], T[o + 3]) < -r ||
+          Math.min(T[o + 1], T[o + 4]) > r || Math.max(T[o + 1], T[o + 4]) < -r) continue;
+      this.lineCount++;
+    }
+  }
+
+  #gather(node, reach) {
+    const g = node.gpu, sd = node.solid;
+    const { m00, m01, m02, m10, m11, m12, m20, m21, m22, b0, b1, b2 } = this.#frame(g);
+    // The local origin in the tile frame: p = M^T (0 - b).
+    const px = -(m00 * b0 + m10 * b1 + m20 * b2);
+    const py = -(m01 * b0 + m11 * b1 + m21 * b2);
+
+    const minX = g.boxMin[0], minY = g.boxMin[1], minZ = g.boxMin[2];
+    const sx = g.boxSize[0], sy = g.boxSize[1], sz = g.boxSize[2];
+    const kx = sx / 65535, ky = sy / 65535, kz = sz / 65535;
+    const toQ = (v, lo, span) => (span > 0 ? ((v - lo) / span) * 65535 : 0);
+    const r = reach + 1;
+    const qx0 = toQ(px - r, minX, sx), qx1 = toQ(px + r, minX, sx);
+    const qy0 = toQ(py - r, minY, sy), qy1 = toQ(py + r, minY, sy);
+    if (qx1 < 0 || qy1 < 0 || qx0 > 65535 || qy0 > 65535) return;
+    const cells = sd.cells, shift = sd.shift;
+    const cx0 = clampQ(qx0) >> shift, cx1 = clampQ(qx1) >> shift;
+    const cy0 = clampQ(qy0) >> shift, cy1 = clampQ(qy1) >> shift;
+
+    sd.stamps ??= new Uint32Array(sd.triangles);
+    const stamps = sd.stamps, stamp = this.stamp;
+    const v = sd.vertices, idx = sd.indices, start = sd.cellStart, list = sd.cellTris;
+    let gathered = 0;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const cell = cy * cells + cx;
+        for (let k = start[cell], end = start[cell + 1]; k < end; k++) {
+          const t = list[k];
+          if (stamps[t] === stamp) continue;
+          stamps[t] = stamp;
+          if (this.count * REC + REC > this.tris.length) this.#grow();
+          const o = this.count * REC, T = this.tris;
+          for (let j = 0; j < 3; j++) {
+            const vi = idx[t * 3 + j] * 6;
+            const x = minX + v[vi] * kx, y = minY + v[vi + 1] * ky, z = minZ + v[vi + 2] * kz;
+            T[o + j * 3] = m00 * x + m01 * y + m02 * z + b0;
+            T[o + j * 3 + 1] = m10 * x + m11 * y + m12 * z + b1;
+            T[o + j * 3 + 2] = m20 * x + m21 * y + m22 * z + b2;
+          }
+          if (this.#finish(o, reach)) { this.count++; gathered++; }
+        }
+      }
+    }
+    if (gathered) this.stats.tiles++;
+  }
+
+  /* Normal and bounds for the triangle just written; false to drop it
+   * (degenerate, or entirely out of reach). */
+  #finish(o, reach) {
+    const T = this.tris;
+    const ax = T[o], ay = T[o + 1], az = T[o + 2];
+    const bx = T[o + 3], by = T[o + 4], bz = T[o + 5];
+    const cx = T[o + 6], cy = T[o + 7], cz = T[o + 8];
+    const minX = Math.min(ax, bx, cx), maxX = Math.max(ax, bx, cx);
+    const minY = Math.min(ay, by, cy), maxY = Math.max(ay, by, cy);
+    if (minX > reach || maxX < -reach || minY > reach || maxY < -reach) return false;
+    const ux = bx - ax, uy = by - ay, uz = bz - az;
+    const vx = cx - ax, vy = cy - ay, vz = cz - az;
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const len = Math.hypot(nx, ny, nz);
+    if (len < 1e-6) return false;
+    nx /= len; ny /= len; nz /= len;
+    T[o + 9] = nx; T[o + 10] = ny; T[o + 11] = nz;
+    T[o + 12] = minX; T[o + 13] = minY; T[o + 14] = maxX; T[o + 15] = maxY;
+    T[o + 16] = Math.min(az, bz, cz); T[o + 17] = Math.max(az, bz, cz);
+    return true;
+  }
+
+  #grow() {
+    const next = new Float32Array(this.tris.length * 2);
+    next.set(this.tris);
+    this.tris = next;
+  }
+
+  /**
+   * Height of the highest surface one can stand on at (x, y) that is no
+   * higher than `zMax`, or -Infinity.
+   */
+  floor(x, y, zMax) {
+    const T = this.tris, walk = this.walkCos;
+    let best = -Infinity;
+    for (let i = 0, o = 0; i < this.count; i++, o += REC) {
+      const nz = T[o + 11];
+      if (Math.abs(nz) < walk || T[o + 16] > zMax + 1e-4) continue;
+      if (x < T[o + 12] || x > T[o + 14] || y < T[o + 13] || y > T[o + 15]) continue;
+      if (!inside(T, o, x, y)) continue;
+      const z = T[o + 2] - (T[o + 9] * (x - T[o]) + T[o + 10] * (y - T[o + 1])) / nz;
+      if (z <= zMax + 1e-4 && z > best) best = z;
+    }
+    return best;
+  }
+
+  /** Height of the lowest surface over (x, y) no lower than `zMin`, or Infinity. */
+  ceiling(x, y, zMin) {
+    const T = this.tris;
+    let best = Infinity;
+    for (let i = 0, o = 0; i < this.count; i++, o += REC) {
+      const nz = T[o + 11];
+      if (Math.abs(nz) < CEILING_MIN_NZ || T[o + 17] < zMin) continue;
+      if (x < T[o + 12] || x > T[o + 14] || y < T[o + 13] || y > T[o + 15]) continue;
+      if (!inside(T, o, x, y)) continue;
+      const z = T[o + 2] - (T[o + 9] * (x - T[o]) + T[o + 10] * (y - T[o + 1])) / nz;
+      if (z >= zMin && z < best) best = z;
+    }
+    return best;
+  }
+
+  /**
+   * The highest point of anything whose plan comes within `r` of (x, y), or
+   * -Infinity: what a path passing there has to clear. Whole triangles
+   * count, so a sloping roof counts at its ridge.
+   */
+  highest(x, y, r) {
+    const T = this.tris;
+    let best = -Infinity;
+    for (let i = 0, o = 0; i < this.count; i++, o += REC) {
+      if (T[o + 17] <= best) continue;
+      if (x < T[o + 12] - r || x > T[o + 14] + r || y < T[o + 13] - r || y > T[o + 15] + r) continue;
+      if (nearestInPlan(T, o, x, y).dist <= r) best = T[o + 17];
+    }
+    const L = this.lines;
+    for (let i = 0, o = 0; i < this.lineCount; i++, o += LINE) {
+      const top = Math.max(L[o + 2], L[o + 5]) + L[o + 6];
+      if (top > best && lineInPlan(L, o, x, y).dist <= r + L[o + 6]) best = top;
+    }
+    return best;
+  }
+
+  /**
+   * Whether anything is over (x, y) above local height `zMin`: a surface
+   * right over the point, or a rope or pylon passing within `r` of it.
+   * What a flight going straight up or down there would pass through.
+   */
+  overhead(x, y, r, zMin) {
+    if (this.ceiling(x, y, zMin) < Infinity) return true;
+    const L = this.lines;
+    for (let i = 0, o = 0; i < this.lineCount; i++, o += LINE) {
+      const hit = lineInPlan(L, o, x, y);
+      if (hit.dist <= r + L[o + 6] && L[o + 2] + (L[o + 5] - L[o + 2]) * hit.t + L[o + 6] >= zMin) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Moves `p` ({x, y}) until an upright cylinder of `radius` spanning heights
+   * zLow..zHigh there overlaps no wall, deepest overlap first, as a corner
+   * needs two pushes. Each push direction goes onto `contacts` as x, y.
+   * Returns how many pushes it took.
+   */
+  resolve(p, radius, zLow, zHigh, contacts) {
+    const T = this.tris, walk = this.walkCos;
+    let pushes = 0;
+    for (let iter = 0; iter < 4; iter++) {
+      let deepest = 1e-5, dirX = 0, dirY = 0;
+      for (let i = 0, o = 0; i < this.count; i++, o += REC) {
+        if (Math.abs(T[o + 11]) >= walk) continue;                    // a floor, not a wall
+        if (T[o + 16] >= zHigh || T[o + 17] <= zLow) continue;        // above the head or below the step
+        if (p.x < T[o + 12] - radius || p.x > T[o + 14] + radius ||
+            p.y < T[o + 13] - radius || p.y > T[o + 15] + radius) continue;
+        if (!besideBody(T, o, p.x, p.y, radius, zLow, zHigh)) continue;
+        const hit = nearestInPlan(T, o, p.x, p.y);
+        let dist = hit.dist, dx, dy;
+        if (dist > 1e-6) {
+          dx = (p.x - hit.x) / dist; dy = (p.y - hit.y) / dist;
+        } else {
+          // Right on the wall's line, or over a leaning face: out along the
+          // face's own horizontal normal, on the side the body is on.
+          const hx = T[o + 9], hy = T[o + 10], hl = Math.hypot(hx, hy) || 1;
+          const side = hx * (p.x - T[o]) + hy * (p.y - T[o + 1]) +
+            T[o + 11] * ((zLow + zHigh) / 2 - T[o + 2]) >= 0 ? 1 : -1;
+          dx = (side * hx) / hl; dy = (side * hy) / hl;
+          dist = 0;
+        }
+        const depth = radius - dist;
+        if (depth > deepest) { deepest = depth; dirX = dx; dirY = dy; }
+      }
+      if (deepest <= 1e-5) break;
+      p.x += dirX * (deepest + 1e-4);
+      p.y += dirY * (deepest + 1e-4);
+      contacts?.push(dirX, dirY);
+      pushes++;
+    }
+    return pushes;
+  }
+
+  /**
+   * Moves from `from` towards `to` ({x, y}, local metres) in steps shorter
+   * than the body, resolving walls after each, and leaves the end in `to`.
+   */
+  sweep(from, to, radius, zLow, zHigh, contacts) {
+    const dx = to.x - from.x, dy = to.y - from.y;
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / (radius * 0.8)));
+    const p = { x: from.x, y: from.y };
+    for (let i = 0; i < steps; i++) {
+      p.x += dx / steps;
+      p.y += dy / steps;
+      this.resolve(p, radius, zLow, zHigh, contacts);
+    }
+    to.x = p.x;
+    to.y = p.y;
+    return to;
+  }
+
+  /**
+   * Whether a body standing with its feet at `feet` (local height) at (x, y)
+   * is clear of everything: not inside a building, and no wall within
+   * `radius` between a step above its feet and its head. Inside is decided
+   * the way it is for any closed shape, by counting how many surfaces a line
+   * straight up from the feet passes through: odd is inside a building, even
+   * is outside, or under a bridge, whose deck it passes into and out of.
+   */
+  clearAt(x, y, feet, radius, height) {
+    return this.#clear(x, y, feet, radius, height, true);
+  }
+
+  /** Whether feet at local height `feet` at (x, y) are inside a building (clearAt's count alone). */
+  insideAt(x, y, feet) {
+    return !this.#clear(x, y, feet, 0, 0, false);
+  }
+
+  #clear(x, y, feet, radius, height, walls) {
+    const T = this.tris, walk = this.walkCos;
+    // Off the exact point by a hair, so a line through a shared edge or
+    // corner is not counted twice.
+    const px = x + 1.37e-4, py = y + 0.71e-4;
+    let crossings = 0;
+    for (let i = 0, o = 0; i < this.count; i++, o += REC) {
+      if (x < T[o + 12] - radius || x > T[o + 14] + radius ||
+          y < T[o + 13] - radius || y > T[o + 15] + radius) continue;
+      const nz = T[o + 11];
+      // Surfaces over the point, for the count.
+      if (Math.abs(nz) > 1e-6 && T[o + 17] > feet && inside(T, o, px, py)) {
+        const z = T[o + 2] - (T[o + 9] * (px - T[o]) + T[o + 10] * (py - T[o + 1])) / nz;
+        if (z > feet) crossings++;
+      }
+      // Walls around the body.
+      if (walls && Math.abs(nz) < walk && T[o + 16] < feet + height && T[o + 17] > feet + STEP_CLEARANCE &&
+          besideBody(T, o, x, y, radius, feet + STEP_CLEARANCE, feet + height) &&
+          nearestInPlan(T, o, x, y).dist < radius) return false;
+    }
+    return (crossings & 1) === 0;
+  }
+
+  /**
+   * The nearest point within `maxDistance` metres of (x, y) where a body
+   * stands clear (see clearAt), searched in rings a metre apart, or null.
+   * `feetAt(x, y)` gives the ground height at a point, local metres, or null
+   * where it is not known.
+   */
+  nearestClear(x, y, radius, height, maxDistance, feetAt) {
+    return nearestWhere(x, y, maxDistance, (px, py) => {
+      const feet = feetAt(px, py);
+      return feet != null && this.clearAt(px, py, feet, radius, height);
+    });
+  }
+
+  /**
+   * Whether nothing built rises more than `step` over feet at local height
+   * `feet` within `room` metres of (x, y) seen from above, ropes included:
+   * the room round a spot to stand or come straight down onto (highest).
+   */
+  roomAt(x, y, feet, room, step) {
+    return this.highest(x, y, room) <= feet + step;
+  }
+}
+
+/**
+ * The nearest point within `maxDistance` metres of (x, y) where `test(x, y)`
+ * holds, searched in rings a metre apart, points about a metre apart round
+ * each, or null.
+ */
+export function nearestWhere(x, y, maxDistance, test) {
+  if (test(x, y)) return { x, y };
+  for (let ring = 1; ring <= maxDistance; ring++) {
+    const n = Math.max(8, Math.round(2 * Math.PI * ring));
+    for (let k = 0; k < n; k++) {
+      const a = (2 * Math.PI * k) / n;
+      const px = x + ring * Math.cos(a), py = y + ring * Math.sin(a);
+      if (test(px, py)) return { x: px, y: py };
+    }
+  }
+  return null;
+}
+
+/**
+ * As nearestWhere, for spots where `fits(x, y)` holds, preferring those where
+ * `roomy(x, y)` holds too (asked only where it fits): the nearest roomy one,
+ * looked for out to `farther` metres beyond the nearest that only fits,
+ * which is taken where there is none. { x, y, roomy } or null.
+ */
+export function nearestRoomy(x, y, maxDistance, fits, roomy, farther) {
+  let first = null, limit = maxDistance;
+  const look = (px, py) => {
+    if (!fits(px, py)) return false;
+    if (roomy(px, py)) return true;
+    if (!first) {
+      first = { x: px, y: py, roomy: false };
+      limit = Math.min(maxDistance, Math.hypot(px - x, py - y) + farther);
+    }
+    return false;
+  };
+  if (look(x, y)) return { x, y, roomy: true };
+  for (let ring = 1; ring <= limit; ring++) {
+    const n = Math.max(8, Math.round(2 * Math.PI * ring));
+    for (let k = 0; k < n; k++) {
+      const a = (2 * Math.PI * k) / n;
+      const px = x + ring * Math.cos(a), py = y + ring * Math.sin(a);
+      if (look(px, py)) return { x: px, y: py, roomy: true };
+    }
+  }
+  return first;
+}
+
+function dot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function clampQ(q) { return q < 0 ? 0 : q > 65535 ? 65535 : q | 0; }
+
+/* Whether (x, y) lies inside a triangle seen from above, edges included. */
+function inside(T, o, x, y) {
+  const ax = T[o], ay = T[o + 1], bx = T[o + 3], by = T[o + 4], cx = T[o + 6], cy = T[o + 7];
+  const e0 = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+  const e1 = (cx - bx) * (y - by) - (cy - by) * (x - bx);
+  const e2 = (ax - cx) * (y - cy) - (ay - cy) * (x - cx);
+  const tol = 1e-7 * (Math.abs(e0) + Math.abs(e1) + Math.abs(e2)) + 1e-9;
+  return (e0 >= -tol && e1 >= -tol && e2 >= -tol) || (e0 <= tol && e1 <= tol && e2 <= tol);
+}
+
+/* Scratch polygons for clipping: a triangle cut by four lines has at most
+ * seven corners. */
+const clipIn = new Float64Array(24), clipOut = new Float64Array(24);
+
+/*
+ * Whether the part of a triangle over the square of half-size r around
+ * (x, y), seen from above, reaches into the heights zLow..zHigh. The triangle
+ * is clipped to the square (Sutherland-Hodgman, one side at a time) and the
+ * lowest and highest corners left are compared. A wall seen edge-on works
+ * the same way: the clip keeps the slice of it that stands in the square.
+ */
+function besideBody(T, o, x, y, r, zLow, zHigh) {
+  // Most walls are no taller than a body, and a whole triangle inside the
+  // square is its own slice: nothing to cut.
+  if (T[o + 12] >= x - r && T[o + 14] <= x + r && T[o + 13] >= y - r && T[o + 15] <= y + r) return true;
+  let src = clipIn, dst = clipOut, n = 3;
+  for (let k = 0; k < 9; k++) src[k] = T[o + k];
+  for (let side = 0; side < 4 && n > 0; side++) {
+    const axis = side >> 1;                               // x, x, y, y
+    const keepAbove = (side & 1) === 0;                   // x >= x - r, x <= x + r, ...
+    const bound = (axis === 0 ? x : y) + (keepAbove ? -r : r);
+    let m = 0;
+    for (let i = 0; i < n; i++) {
+      const a = i * 3, b = ((i + 1) % n) * 3;
+      const da = keepAbove ? src[a + axis] - bound : bound - src[a + axis];
+      const db = keepAbove ? src[b + axis] - bound : bound - src[b + axis];
+      if (da >= 0) { dst[m * 3] = src[a]; dst[m * 3 + 1] = src[a + 1]; dst[m * 3 + 2] = src[a + 2]; m++; }
+      if ((da >= 0) !== (db >= 0)) {
+        const t = da / (da - db);
+        dst[m * 3] = src[a] + (src[b] - src[a]) * t;
+        dst[m * 3 + 1] = src[a + 1] + (src[b + 1] - src[a + 1]) * t;
+        dst[m * 3 + 2] = src[a + 2] + (src[b + 2] - src[a + 2]) * t;
+        m++;
+      }
+    }
+    n = m;
+    const swap = src; src = dst; dst = swap;
+  }
+  if (n === 0) return false;
+  let low = Infinity, high = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const z = src[i * 3 + 2];
+    if (z < low) low = z;
+    if (z > high) high = z;
+  }
+  return low < zHigh && high > zLow;
+}
+
+const nearest = { x: 0, y: 0, dist: 0 };
+const nearestLine = { t: 0, dist: 0 };
+
+/* How far a rope piece's plan passes from (x, y), and where along it (0..1). */
+function lineInPlan(L, o, x, y) {
+  const ax = L[o], ay = L[o + 1], ex = L[o + 3] - ax, ey = L[o + 4] - ay, l2 = ex * ex + ey * ey;
+  let t = l2 > 0 ? ((x - ax) * ex + (y - ay) * ey) / l2 : 0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const dx = ax + t * ex - x, dy = ay + t * ey - y;
+  nearestLine.t = t;
+  nearestLine.dist = Math.sqrt(dx * dx + dy * dy);
+  return nearestLine;
+}
+
+/* The point of a triangle's plan (its shadow from straight above) nearest to
+ * (x, y), and how far. A wall's plan is a line; a sloping face's is a
+ * triangle, and a point over it is at distance zero. */
+function nearestInPlan(T, o, x, y) {
+  const ax = T[o], ay = T[o + 1], bx = T[o + 3], by = T[o + 4], cx = T[o + 6], cy = T[o + 7];
+  const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+  if (Math.abs(area) > 1e-4 && inside(T, o, x, y)) {
+    nearest.x = x; nearest.y = y; nearest.dist = 0;
+    return nearest;
+  }
+  let best = Infinity, bxOut = 0, byOut = 0;
+  for (let e = 0; e < 3; e++) {
+    const px = T[o + e * 3], py = T[o + e * 3 + 1];
+    const qx = T[o + ((e + 1) % 3) * 3], qy = T[o + ((e + 1) % 3) * 3 + 1];
+    const ex = qx - px, ey = qy - py;
+    const l2 = ex * ex + ey * ey;
+    let t = l2 > 0 ? ((x - px) * ex + (y - py) * ey) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const sx = px + t * ex, sy = py + t * ey;
+    const d = (x - sx) * (x - sx) + (y - sy) * (y - sy);
+    if (d < best) { best = d; bxOut = sx; byOut = sy; }
+  }
+  nearest.x = bxOut; nearest.y = byOut; nearest.dist = Math.sqrt(best);
+  return nearest;
+}
