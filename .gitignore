@@ -1,0 +1,8 @@
+# Temporary output: screenshots, logs, downloaded test tiles, test runs
+.scratch/
+node_modules/
+# Kept on this PC only, never on GitHub: personal notes and Claude Code's files
+/CLAUDE.md
+/README.md
+/docs/
+/.claude/

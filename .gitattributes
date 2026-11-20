@@ -1,0 +1,6 @@
+# Line endings stay LF on every system (wasm/build.sh fails in bash with Windows line endings)
+* text=auto eol=lf
+*.wasm binary
+*.b3dm binary
+*.pbf binary
+*.terrain binary

@@ -1,0 +1,264 @@
+/* fly.js — free flight.
+ *
+ * WASD moves in the local horizontal plane along the heading, and altitude
+ * answers only to Space and Left Shift. Where the nose points never drags you
+ * up or down, which is what makes level flight along a valley possible
+ * without fighting the mouse. The ground is solid: you can skim it, not pass
+ * through it. So are buildings and bridges, unless the setting says to fly
+ * through them: walls stop you and you slide along them, roofs and decks
+ * hold you up like ground, and gentle roofs lift you over as a hillside
+ * would.
+ *
+ * In a tunnel the tunnel is: its floor holds you up instead of the
+ * hillside over it, its walls and vault hold you in (Stage 5.17b; walking
+ * and the airplane follow in 5.18b).
+ *
+ * Only accurate ground is solid (terrain/ground.js). While the terrain under
+ * you is still streaming in, the first tiles to arrive are coarse stand-ins,
+ * and over mountains their surface can be kilometres above the real valley
+ * floor. With no accurate ground known there is no floor: you may be under
+ * the stand-in for a moment, but it never lifts you.
+ *
+ * Switching to walking takes this flight's velocity on (walk.js, enter),
+ * vertical too (Stage 5.13b, his words: "if I'm flying and go into walk
+ * mode, also consider vertical momentum"). A double tap of Space is itself
+ * two presses of fly-up, so it hands on what you were doing before the taps
+ * (tapVelocity; his answer: "the climb before the taps"): the climb you
+ * held Space for just before them, else the vertical speed before the
+ * first, never the taps' own climb at full flying speed.
+ */
+
+import { KEY } from '../camera.js';
+import { BODY_RADIUS, STEP_HEIGHT } from './walk.js';
+import { groundSample } from '../terrain/ground.js';
+import { boreRoom } from '../tunnels/bore.js';
+
+/* A double tap's presses are looked for this far back (seconds: the page's
+ * double tap is 0.3 s at most); Space held at least `held` seconds is a
+ * climb you meant, and counts if the first tap came within `gap` seconds of
+ * letting it go. */
+const TAP = { window: 0.5, held: 0.3, gap: 0.35 };
+/* A step inside a tunnel goes in pieces this long at most (#throughBore), and the ground counts as over the feet
+ * (the step left the bore under the hillside) when it is this much higher. */
+const BORE_PIECE = 0.5, BORE_UNDER = 0.5, BORE_PIECES_MOST = 400;
+
+/* Ctrl with a movement key. Flight speed spans five orders of magnitude, so a
+ * multiplier works here where walking needs a realistic pair of speeds. */
+export const SPRINT_MULTIPLIER = 3;
+
+export class FlyController {
+  constructor() {
+    this.sprinting = false;
+    this.aboveGround = null;   // metres from eye to ground, when known
+    this.boreHere = { lon: 0, lat: 0, height: 0 };   // where a piece of a step in a tunnel began (#throughBore)
+    // How fast the last step moved, metres a second east, north and up: what
+    // walking takes over when you switch to it in the air (walk.js, enter).
+    this.velocity = { east: 0, north: 0, up: 0 };
+    // Space's presses (when, on this controller's clock, and the vertical
+    // speed just before each), and the last climb it was held for (TAP).
+    this.clock = 0;
+    this.presses = [];
+    this.held = { since: null, released: -Infinity, up: 0 };
+    this.tapped = { east: 0, north: 0, up: 0 };
+    this.sample = groundSample();
+    this.local = { x: 0, y: 0, z: 0 };
+    this.goal = { x: 0, y: 0 };
+    this.target = { lon: 0, lat: 0 };
+  }
+
+  enter() {
+    this.sprinting = false;
+    this.velocity.east = this.velocity.north = this.velocity.up = 0;
+    this.presses.length = 0;
+    this.held.since = null;
+    this.held.released = -Infinity;
+  }
+
+  /**
+   * The velocity a double tap of Space hands on to walking (see the top of
+   * the file): across as it moves now; up or down as before the taps.
+   */
+  tapVelocity() {
+    const out = this.tapped, h = this.held;
+    out.east = this.velocity.east;
+    out.north = this.velocity.north;
+    let first = null;
+    for (let i = 0; i < this.presses.length; i++) {
+      const p = this.presses[i];
+      if (p.at >= this.clock - TAP.window && (!first || p.at < first.at)) first = p;
+    }
+    // No press of the taps seen yet (both came between two steps): no climb, a descent kept.
+    let up = first ? first.up : Math.min(0, this.velocity.up);
+    if (first && first.at >= h.released && first.at - h.released <= TAP.gap) up = h.up;
+    out.up = up;
+    return out;
+  }
+
+  /**
+   * One physics step.
+   * @param solids  features/solid.js, gathered around the camera this frame,
+   *                or null where nothing is solid
+   */
+  /* A step from inside a tunnel (5.17j, his words on 5.17i: "When I fly fast in them it teleports me above"): in
+   * pieces of BORE_PIECE metres at most, each held inside the bore (its walls and vault); a piece that would leave
+   * it under the ground (through its wall, or past where one tube ends and the next begins) goes only along the
+   * tube instead, and if that leaves it too, stops. Up to 5.17i the whole step went at once and, ending outside the
+   * bore under the hillside, the hillside's surface was the ground: you were set on top of it. Out of a portal into
+   * the open the step goes on as any. */
+  #throughBore(camera, dEast, dNorth, dUp, params, ground) {
+    const pieces = Math.min(BORE_PIECES_MOST, Math.max(1, Math.ceil(Math.hypot(dEast, dNorth, dUp) / BORE_PIECE)));
+    const pe = dEast / pieces, pn = dNorth / pieces, pu = dUp / pieces;
+    const here = this.boreHere;
+    for (let i = 0; i < pieces; i++) {
+      const feet = camera.height - params.eyeHeight;
+      const bore = params.tunnelAt(camera.lon, camera.lat, feet);
+      if (!bore) { camera.translate(pe, pn, pu); continue; }
+      here.lon = camera.lon; here.lat = camera.lat; here.height = camera.height;
+      // Along the tube here (its right is (rightX, rightY): along is a quarter turn left of it).
+      const ax = -bore.rightY, ay = bore.rightX;
+      camera.translate(pe, pn, pu);
+      if (this.#keptIn(camera, params, ground)) continue;
+      // Through its wall or out of its end under the ground: only along it, from where the piece began.
+      camera.setLonLatHeight(here.lon, here.lat, here.height);
+      const along = pe * ax + pn * ay;
+      camera.translate(along * ax, along * ay, pu);
+      if (this.#keptIn(camera, params, ground)) continue;
+      camera.setLonLatHeight(here.lon, here.lat, here.height);
+      break;
+    }
+  }
+
+  /* Whether the camera is still somewhere it may fly: in a bore (pushed back inside its walls and under its vault),
+   * or in the open over the ground (not under it). */
+  #keptIn(camera, params, ground) {
+    const feet = camera.height - params.eyeHeight;
+    const bore = params.tunnelAt(camera.lon, camera.lat, feet);
+    if (bore) {
+      const room = boreRoom(bore, Math.max(0, feet - bore.floor), Math.max(0, feet - bore.floor) + params.bodyHeight, BODY_RADIUS);
+      if (room > 0 && Math.abs(bore.across) > room) {
+        const back = Math.sign(bore.across) * room - bore.across;
+        camera.translate(bore.rightX * back, bore.rightY * back, 0);
+      }
+      const top = Math.max(bore.top - 0.3, bore.ground + params.eyeHeight);
+      if (camera.height > top) camera.setHeight(top);
+      if (camera.height < bore.ground + params.eyeHeight) camera.setHeight(bore.ground + params.eyeHeight);
+      return true;
+    }
+    // Out of the bore: fine where the ground is under the feet (out of a portal), not where it is over them.
+    return !(ground.sample(camera.lon, camera.lat, this.sample) && this.sample.accurate && this.sample.height > feet + BORE_UNDER);
+  }
+
+  step(dt, keys, pressed, camera, ground, params, solids = null) {
+    // Space's presses and holds, for a double tap's switch to walking (tapVelocity).
+    this.clock += dt;
+    if (pressed & KEY.UP) {
+      this.presses.push({ at: this.clock, up: this.velocity.up });
+      if (this.presses.length > 3) this.presses.shift();
+    }
+    const space = (keys & KEY.UP) !== 0, hold = this.held;
+    if (space && hold.since == null) hold.since = this.clock;
+    else if (!space && hold.since != null) {
+      if (this.clock - hold.since >= TAP.held) { hold.released = this.clock; hold.up = this.velocity.up; }
+      hold.since = null;
+    }
+
+    let f = 0, r = 0, u = 0;
+    if (keys & KEY.FORWARD) f += 1;
+    if (keys & KEY.BACK) f -= 1;
+    if (keys & KEY.RIGHT) r += 1;
+    if (keys & KEY.LEFT) r -= 1;
+    if (keys & KEY.UP) u += 1;
+    if (keys & KEY.DOWN) u -= 1;
+
+    this.sprinting = (keys & KEY.SPRINT) !== 0 && (f !== 0 || r !== 0 || u !== 0);
+    const feetBefore = camera.height - params.eyeHeight;
+    // In a tunnel's room what is built is cut away (tunnels.js roomAt): its solids do not count there.
+    let solid = solids?.active && !params.flyThrough && !params.tunnelRoomAt?.(camera.lon, camera.lat, feetBefore) ? solids : null;
+    let stride = 0, movedEast = 0, movedNorth = 0;
+
+    if (f !== 0 || r !== 0 || u !== 0) {
+      // Diagonals no faster than the axes, up and down included: W with
+      // Space goes as fast as W alone, 0.71 of it forward and 0.71 up (until
+      // Stage 5.11b only W, A, S and D were held to one, so climbing while
+      // moving was 1.41 times as fast).
+      const held = Math.hypot(f, r, u);
+      if (held > 1) { f /= held; r /= held; u /= held; }
+      const step = camera.speed * (this.sprinting ? SPRINT_MULTIPLIER : 1) * dt;
+      // Heading in the local frame: forward is (sin yaw, cos yaw) in east and
+      // north, right is its clockwise perpendicular.
+      const cy = Math.cos(camera.yaw), sy = Math.sin(camera.yaw);
+      let dEast = (f * sy + r * cy) * step, dNorth = (f * cy - r * sy) * step;
+      const dUp = u * step;
+      // (Nor where the step goes into a tunnel's room.)
+      if (solid && (dEast !== 0 || dNorth !== 0)) {
+        camera.offsetLonLat(dEast, dNorth, this.target);
+        if (params.tunnelRoomAt?.(this.target.lon, this.target.lat, feetBefore + dUp)) solid = null;
+      }
+      if (solid && (dEast !== 0 || dNorth !== 0)) {
+        // Walls between a step above the feet and the head, over the whole
+        // height the body passes through this step.
+        const at = solid.toLocal(camera.lon, camera.lat, feetBefore, this.local);
+        const goal = this.goal;
+        goal.x = at.x + dEast; goal.y = at.y + dNorth;
+        const low = at.z + Math.min(0, dUp) + STEP_HEIGHT;
+        const high = at.z + Math.max(0, dUp) + params.bodyHeight;
+        solid.sweep(at, goal, BODY_RADIUS, low, high, null);
+        dEast = goal.x - at.x; dNorth = goal.y - at.y;
+      }
+      stride = Math.hypot(dEast, dNorth);
+      movedEast = dEast;
+      movedNorth = dNorth;
+      const inBore = params.flyThrough ? null : params.tunnelAt?.(camera.lon, camera.lat, feetBefore) ?? null;
+      if (inBore) this.#throughBore(camera, dEast, dNorth, dUp, params, ground);
+      else camera.translate(dEast, dNorth, dUp);
+    }
+
+    // Solid ground, where it is known accurately. Kept at eye height so
+    // switching to walking from a skim lands you standing, not falling.
+    // Inside a tunnel (engine/tunnels/tunnels.js, boreAt) its floor is the
+    // ground, not the hillside above it, and its walls and vault hold you in.
+    let floor = -Infinity;
+    const bore = params.tunnelAt?.(camera.lon, camera.lat, camera.height - params.eyeHeight) ?? null;
+    if (bore) {
+      floor = bore.ground;
+      // The narrowest the bore is over the body's height there (an arch narrows towards its crown).
+      const feetNow = camera.height - params.eyeHeight;
+      const room = boreRoom(bore, Math.max(0, feetNow - bore.floor), Math.max(0, feetNow - bore.floor) + params.bodyHeight, BODY_RADIUS);
+      if (room > 0 && Math.abs(bore.across) > room) {
+        const back = Math.sign(bore.across) * room - bore.across;
+        camera.translate(bore.rightX * back, bore.rightY * back, 0);
+      }
+      const top = Math.max(bore.top - 0.3, floor + params.eyeHeight);
+      if (camera.height > top) camera.setHeight(top);
+    } else if (ground.sample(camera.lon, camera.lat, this.sample) && this.sample.accurate) {
+      floor = this.sample.height;
+    }
+    if (solid) {
+      const feet = camera.height - params.eyeHeight;
+      const at = solid.toLocal(camera.lon, camera.lat, feet, this.local);
+      const base = solid.origin.height;
+      // Anything standable up to a step above the higher of the feet before
+      // and after, and up the slope a stride's worth: flying into a gentle
+      // roof rides up it, as it would up a hillside.
+      const reach = Math.max(feetBefore, feet) - base + STEP_HEIGHT + stride * Math.tan(params.maxSlope);
+      const built = solid.floor(at.x, at.y, reach) + base;
+      if (built > floor) floor = built;
+      if (feet > feetBefore) {
+        // Rising into something overhead stops at it.
+        const over = solid.ceiling(at.x, at.y, feetBefore - base + params.bodyHeight - 0.05) + base;
+        if (feet + params.bodyHeight > over) camera.setHeight(over - params.bodyHeight + params.eyeHeight);
+      }
+    }
+    if (Number.isFinite(floor)) {
+      if (camera.height < floor + params.eyeHeight) camera.setHeight(floor + params.eyeHeight);
+      this.aboveGround = camera.height - floor;
+    } else {
+      this.aboveGround = null;
+    }
+    if (dt > 0) {
+      this.velocity.east = movedEast / dt;
+      this.velocity.north = movedNorth / dt;
+      this.velocity.up = (camera.height - params.eyeHeight - feetBefore) / dt;
+    }
+  }
+}
