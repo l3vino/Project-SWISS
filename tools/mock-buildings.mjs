@@ -21,11 +21,19 @@ import { height, TOWN, townGrid, houseCentre, HOUSE_HALF, BRIDGE_PLACE } from '.
 export { HOUSE_HALF };
 
 const require = createRequire(import.meta.url);
+/* The encoders the detailed tiles rotate through, wherever they are installed (DRACO_MODULE, MESHOPT_MODULE: their
+ * paths; else the packages; else the Linux container's global folder). Without them only plain tiles are served,
+ * which is all the core test asks for. */
 const GLOBAL = '/home/claude/.npm-global/lib/node_modules';
-const draco3d = require(process.env.DRACO_MODULE || `${GLOBAL}/draco3dgltf`);
-const { MeshoptEncoder } = await import(process.env.MESHOPT_MODULE || `${GLOBAL}/meshoptimizer/meshopt_encoder.js`);
-await MeshoptEncoder.ready;
-const dracoEncoder = await draco3d.createEncoderModule({});
+async function firstOf(...loads) {
+  for (const load of loads) { try { return await load(); } catch { /* the next place */ } }
+  return null;
+}
+const draco3d = await firstOf(() => require(process.env.DRACO_MODULE || 'draco3dgltf'), () => require(`${GLOBAL}/draco3dgltf`));
+const MeshoptEncoder = (await firstOf(() => import(process.env.MESHOPT_MODULE || 'meshoptimizer'),
+  () => import(`${GLOBAL}/meshoptimizer/meshopt_encoder.js`)))?.MeshoptEncoder ?? null;
+if (MeshoptEncoder) await MeshoptEncoder.ready;
+const dracoEncoder = draco3d ? await draco3d.createEncoderModule({}) : null;
 
 export const BUILDINGS_PATH = '/ch.swisstopo.swissbuildings3d.3d/v1/';
 
@@ -338,6 +346,9 @@ function tileContent(rect, detailed, encoding) {
   const mid = { lon: (rect.west + rect.east) / 2, lat: (rect.south + rect.north) / 2 };
   const rtc = Array.from(geodeticToEcef(mid.lon, mid.lat, height(mid.lon, mid.lat)));
   const mesh = tileMesh(houses, detailed, rtc);
+  if ((encoding === 'meshopt' && !MeshoptEncoder) || (encoding === 'draco' && !dracoEncoder)) {
+    throw new Error(`mock-buildings: the ${encoding} encoder is not installed (see the top of this file)`);
+  }
   const encode = { plain: gltfPlain, meshopt: gltfMeshopt, draco: gltfDraco }[encoding];
   const types = houses.map((h, k) => (k === HIDDEN_INDEX ? 'Unterirdisches Gebaeude' : h.tower ? 'Hochhaus' : 'Gebaeude Einzelhaus'));
   return b3dm(encode(mesh),

@@ -1302,20 +1302,21 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   // the rails' heads 12 mm over the ground (within the ground's fall across a head: the road there follows the
   // hillside) and the bed under it.
   let trackLine = '';
-  {
-    const { ecefToGeodetic } = await import('../js/core/math.js');
-    const both = new Float32Array([...road, Qm / 2, 0.2 * Qm, Qm / 2, 0.8 * Qm, 0, 0.6 * mLat, 3.0, 0.12, 30, 5]);
-    const track = new Float32Array([road[0], road[1], road[2], road[3], road[4], road[5], 0.7175, 0, 0]);
-    const shaped = shapeOf(hillBytes.slice(), hrect, both);
+  const { ecefToGeodetic } = await import('../js/core/math.js');
+  const { TRACK_FLOATS } = await import('../js/engine/vector/pieces.js');
+  // The track track.c builds over the stand-in hillside shaped with `pieces` (PIECE_FLOATS each) from `tracks`
+  // (TRACK_FLOATS each): its counts, its vertices (28 bytes each) and each vertex's place (lon, lat, height).
+  const trackOver = (pieces, tracks) => {
     // (The stand-in tile has no bounding sphere: its middle, for the track's vertices to be measured from.)
     const hb = hillBytes.slice(), mid = geodeticToEcef(hw + size / 2, hs + size / 2, 1000);
     for (let k = 0; k < 3; k++) new DataView(hb.buffer, hb.byteOffset).setFloat64(32 + 8 * k, mid[k], true);
     core.reset();
     const src = core.write(hb);
-    const roadsAt = core.write(new Uint8Array(both.buffer));
-    const tracksAt = core.write(new Uint8Array(track.buffer));
+    const roadsAt = core.write(new Uint8Array(pieces.buffer, pieces.byteOffset, pieces.byteLength));
+    const tracksAt = core.write(new Uint8Array(tracks.buffer, tracks.byteOffset, tracks.byteLength));
     const res = core.alloc(core.exports.qm_result_size());
-    const st = core.exports.qm_decode(src, hillBytes.byteLength, hrect.west, hrect.south, hrect.east, hrect.north, 0, roadsAt, 2, 0, res, tracksAt, 1);
+    const st = core.exports.qm_decode(src, hillBytes.byteLength, hrect.west, hrect.south, hrect.east, hrect.north, 0, roadsAt,
+      pieces.length / PIECE_FLOATS, 0, res, tracksAt, tracks.length / TRACK_FLOATS);
     core.sync();
     const r = new DataView(core.buffer, res, core.exports.qm_result_size());
     const origin = [r.getFloat64(0, true), r.getFloat64(8, true), r.getFloat64(16, true)];
@@ -1326,6 +1327,15 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     let outside = 0;
     for (const k of idx) if (k >= nv) outside++;
     const at = (i) => ecefToGeodetic([V.getFloat32(i * 28, true) + origin[0], V.getFloat32(i * 28 + 4, true) + origin[1], V.getFloat32(i * 28 + 8, true) + origin[2]]);
+    return { st, nv, ni, sections, crossings, outside, V, at };
+  };
+  // Metres apart two places are across the ground.
+  const apart = (a, b) => Math.hypot((b.lon - a.lon) * 111320 * Math.cos(a.lat * Math.PI / 180), (b.lat - a.lat) * 111132);
+  {
+    const both = new Float32Array([...road, Qm / 2, 0.2 * Qm, Qm / 2, 0.8 * Qm, 0, 0.6 * mLat, 3.0, 0.12, 30, 5]);
+    const track = new Float32Array([road[0], road[1], road[2], road[3], road[4], road[5], 0.7175, 0, 0, NaN, NaN]);
+    const shaped = shapeOf(hillBytes.slice(), hrect, both);
+    const { st, nv, ni, sections, crossings, outside, V, at } = trackOver(both, track);
     const groundUnder = (g) => heightAt(shaped, ((g.lon - hrect.west) / size) * Qm, ((g.lat - hrect.south) / size) * Qm);
     // Over the ground under each shoulder, where the track is not at the crossing: never under 0.30 (where the bench
     // is not quite level, beside the tile's edge, it stands over its highest), and 0.30 on the level stretches.
@@ -1354,12 +1364,109 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (!(worstRail < 0.002)) problems.push(`track: the rails ${worstRail.toFixed(3)} m off 0.172 high`);
     if (!(flushed > 0 && flushHead < 0.011 && flushTop < -0.02)) problems.push(`track: at the crossing the rails' heads ${flushHead.toFixed(3)} m off 12 mm over the road, the bed ${flushTop.toFixed(3)} m over it`);
   }
+  // (a6) Two tracks 3.8 m apart either side of the road's line, on one bench (5.18c: track.c, one bed): each one's
+  // side towards the other runs level out to the line midway (its top's edge within a centimetre of it, 0.30 m over
+  // the bench, as the other's), its lip 5 cm on past it and a centimetre down, under the other's top; nothing farther.
+  {
+    const ex = (road[2] - road[0]) * mLon / Qm, ey = (road[3] - road[1]) * mLat / Qm, el = Math.hypot(ex, ey);
+    const ru = (ey / el) * Qm / mLon, rv = (-ex / el) * Qm / mLat;   // a metre to the right, in the tile's units
+    const off = (d) => [road[0] + ru * d, road[1] + rv * d, road[2] + ru * d, road[3] + rv * d];
+    const bench = Float32Array.from(road);
+    bench[6] = 5.0;   // one bench wide enough for both
+    const tracks = new Float32Array([...off(-1.9), road[4], road[5], 0.7175, 0, 1, NaN, NaN, ...off(1.9), road[4], road[5], 0.7175, 0, 2, NaN, NaN]);
+    const benched = shapeOf(hillBytes.slice(), hrect, bench);
+    const b = trackOver(bench, tracks);
+    // Metres right of the road's line (the line midway between the two), and over the bench, of a vertex.
+    const sideOf = (g) => {
+      const x = (g.lon - hrect.west) / size * mLon - road[0] * mLon / Qm, y = (g.lat - hrect.south) / size * mLat - road[1] * mLat / Qm;
+      return x * (ey / el) - y * (ex / el);
+    };
+    const over = (g) => g.height - heightAt(benched, ((g.lon - hrect.west) / size) * Qm, ((g.lat - hrect.south) / size) * Qm);
+    // (Sections more than 3 m in from the tile's edges: at an edge the other track's piece, clipped a little further
+    // along, may not have begun yet.)
+    const margin = (3 / mLon) * Qm;
+    let edgeOff = 0, lipOff = [Infinity, -Infinity], lipDrop = 0;
+    const heights = [];
+    for (let k = 0; k + 12 <= b.nv; k += 12) {
+      const r1 = b.at(k + 5), r2 = b.at(k + 10), mid = { lon: (r1.lon + r2.lon) / 2, lat: (r1.lat + r2.lat) / 2, height: 0 };
+      const mu = ((mid.lon - hrect.west) / size) * Qm;
+      if (mu < margin || mu > Qm - margin) continue;
+      const middle = sideOf(mid);
+      const edge = b.at(middle < 0 ? k + 2 : k + 1), lip = b.at(middle < 0 ? k + 3 : k);
+      edgeOff = Math.max(edgeOff, Math.abs(sideOf(edge)));
+      const l = sideOf(lip) * Math.sign(-middle);   // how far past the middle line, towards the other track
+      lipOff = [Math.min(lipOff[0], l), Math.max(lipOff[1], l)];
+      lipDrop = Math.max(lipDrop, Math.abs(edge.height - lip.height - 0.01));
+      heights.push(over(edge));
+    }
+    heights.sort((a, b2) => a - b2);
+    const sections = heights.length, low = heights[0], typical = heights[sections >> 1];
+    trackLine += `; two tracks 3.8 m apart: ${sections} sections, one bed, the sides towards each other within ${(edgeOff * 100).toFixed(1)} cm of the ` +
+      `line midway, ${low?.toFixed(3)} m over the bench at least (${typical?.toFixed(3)} typically), their lips ${lipOff[0].toFixed(3)}..${lipOff[1].toFixed(3)} m past it`;
+    if (b.st !== 0 || !sections || b.outside) problems.push(`two tracks: status ${b.st}, ${sections} sections, ${b.outside} indices outside`);
+    else if (!(edgeOff < 0.01 && low > 0.295 && Math.abs(typical - 0.3015) < 0.0035 && lipOff[0] > 0.045 && lipOff[1] < 0.055 && lipDrop < 0.002)) {
+      problems.push(`two tracks: the sides ${edgeOff.toFixed(3)} m off the line midway, ${low.toFixed(3)} (${typical.toFixed(3)}) m over the bench, lips ${lipOff.map((x) => x.toFixed(3))} past it, ${lipDrop.toFixed(3)} m off a centimetre down`);
+    }
+  }
+  // (a7) Over a bridge's deck (5.18c): a piece from a quarter to three quarters across the tile along the road's line,
+  // the deck's top under it rising from 1100 to 1102 m: the bed's top 0.25 m over the deck everywhere along it (the
+  // ground at a deck's end is pinned 5 cm under its top, the bed 0.30 m over that; and its line's 0..3 mm), the rails
+  // 0.172 m high on it, its toes 0.35 m under its top, in the deck.
+  {
+    const along = (u) => road[1] + (road[3] - road[1]) * ((u - road[0]) / (road[2] - road[0]));
+    const u0 = 0.25 * Qm, u1 = 0.75 * Qm, v0 = along(u0), v1 = along(u1);
+    const len = Math.hypot((u1 - u0) * mLon / Qm, (v1 - v0) * mLat / Qm);
+    const d = trackOver(road, new Float32Array([u0, v0, u1, v1, 0, len, 0.7175, 0, 7, 1100, 1102]));
+    let worstTop = 0, worstRail = 0, worstToe = 0, n = 0;
+    for (let k = 0; k + 12 <= d.nv; k += 12) {
+      const deck = 1100 + (2 * d.V.getFloat32(k * 28 + 16, true)) / len;
+      const top = d.at(k + 1).height;
+      n++;
+      worstTop = Math.max(worstTop, Math.abs(top - deck - 0.2515), Math.abs(d.at(k + 2).height - deck - 0.2515));
+      worstRail = Math.max(worstRail, Math.abs(d.at(k + 5).height - d.at(k + 4).height - 0.172));
+      worstToe = Math.max(worstToe, Math.abs(top - d.at(k).height - 0.35));
+    }
+    trackLine += `; over a deck: ${n} sections, the bed's top within ${(worstTop * 1000).toFixed(1)} mm of 0.2515 m over it, rails within ` +
+      `${(worstRail * 1000).toFixed(1)} mm of 0.172 m, toes within ${(worstToe * 1000).toFixed(1)} mm of 0.35 m under the top`;
+    if (d.st !== 0 || !n || d.outside || d.crossings) problems.push(`deck track: status ${d.st}, ${n} sections, ${d.outside} indices outside, ${d.crossings} crossings`);
+    if (!(worstTop < 0.002 && worstRail < 0.002 && worstToe < 0.002)) problems.push(`deck track: top ${worstTop.toFixed(4)}, rails ${worstRail.toFixed(4)}, toes ${worstToe.toFixed(4)} m off`);
+  }
 
   // (b) Göschenen: the real tile, the real roads.
   const vt = decodeVectorTile(core, new Uint8Array(fs.readFileSync(new URL('../tools/fixtures/vt-goeschenen-14-8582-5785.pbf', import.meta.url))), { z: 14, x: 8582, y: 5785, schema: TRANSPORT });
   const block = { block: vt.block.slice(), z: 14, x: 8582, y: 5785, id: 0 };
   const terrain = new Uint8Array(fs.readFileSync(new URL('../tools/fixtures/terrain-goeschenen-16-68663-49757.terrain', import.meta.url)));
   const ts = 180 / 2 ** 16, grect = { west: 68663 * ts - 180, south: 49757 * ts - 90, east: 68664 * ts - 180, north: 49758 * ts - 90 };
+  // (b0) A road tile's lines run on 32 units into each neighbour's square (the vector tiles' buffer). With all its
+  // neighbours cut into the same terrain tile too (5.18c: pieces.js `owners`), those parts are theirs: over the whole
+  // road tile and 1% round it, every piece then ends within its own square (to a centimetre); alone, some reach past it.
+  {
+    const n = 2 ** 14, lonOf = (x) => (x / n) * 360 - 180, latOfY = (y) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / n))) * 180) / Math.PI;
+    const tile = { west: lonOf(8582), east: lonOf(8583), north: latOfY(5785), south: latOfY(5786) };
+    const padLon = (tile.east - tile.west) * 0.01, padLat = (tile.north - tile.south) * 0.01;
+    const wide = { west: tile.west - padLon, east: tile.east + padLon, south: tile.south - padLat, north: tile.north + padLat };
+    const mLon2 = 111320 * Math.cos(((tile.south + tile.north) / 2) * Math.PI / 180);
+    const reach = (owners) => {
+      const o = piecesFor([{ ...block, owners, seen: undefined, stamp: undefined }], wide, kinds, halfWidths);
+      const du = Qm / (wide.east - wide.west), dv = Qm / (wide.north - wide.south);
+      let most = 0, length = 0;
+      for (let i = 0; i < o.count; i++) {
+        const p = o.data.subarray(i * PIECE_FLOATS, (i + 1) * PIECE_FLOATS);
+        length += p[5] - p[4];
+        for (let e = 0; e < 4; e += 2) {
+          const lon = wide.west + p[e] / du, lat = wide.south + p[e + 1] / dv;
+          most = Math.max(most, Math.max(tile.west - lon, lon - tile.east, 0) * mLon2, Math.max(tile.south - lat, lat - tile.north, 0) * 111132);
+        }
+      }
+      return { count: o.count, most, length };
+    };
+    const alone = reach(0), owned = reach(0b111101111);
+    trackLine += `; a road tile's pieces alone ${alone.count} (${(alone.length / 1000).toFixed(2)} km, reaching ${alone.most.toFixed(1)} m past its square), ` +
+      `with its eight neighbours cut in too ${owned.count} (${(owned.length / 1000).toFixed(2)} km, ${(owned.most * 100).toFixed(2)} cm past it)`;
+    if (!(alone.most > 1 && owned.most < 0.01 && owned.length < alone.length)) {
+      problems.push(`a road tile's pieces reach ${alone.most.toFixed(2)} m past its square alone, ${owned.most.toFixed(3)} m with its neighbours (${alone.length.toFixed(0)} → ${owned.length.toFixed(0)} m)`);
+    }
+  }
   const out = piecesFor([block], grect, kinds, halfWidths);
   const pieces = out.data.slice(0, out.count * PIECE_FLOATS);
   const g0 = shapeOf(terrain.slice(), grect, null), g1 = shapeOf(terrain.slice(), grect, pieces);
@@ -1824,6 +1931,37 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (pair.rails !== 2 * one.rails || pair.beds !== 2 * one.beds || !(Math.abs(pair.bedHi - 3.5) < 1e-3) || !(one.bedUp > 0.002 && one.bedUp < 0.01) || !(parting.far <= parting.room + 0.7175 + 0.072 + 1e-3) ||
         nearOf(pair) !== '-2.1: -9.0/4.2, 2.1: -4.2/9.0' || nearOf(one) !== '0.0: -9.0/9.0' || nearOf(turnout) !== '0.0: -9.0/1.0, 1.0: -1.0/9.0') {
       problems.push(`tracks: 4.2 m apart rails ${pair.rails} (one ${one.rails}), beds ${pair.beds} (${one.beds}) to ${pair.bedHi} m, ${one.bedUp} m up, nearest ${nearOf(pair)} (${nearOf(one)}; ${nearOf(turnout)}); 19.9 m off kept within ${parting.far} m`);
+    }
+    // (5.18c) On a raised bed (TunnelSpec.bedTop 0.30, with the open track built in 3D): each track's rails stand on
+    // its top, 5 mm under the open track's (heads 0.467 m over the floor, at the portals too: the open track runs in at
+    // that height), its sides 1 in 1.5 down to the floor (toes 2.14 m out); two lines 4.2 m apart share one bed, the
+    // side of each towards the other level out to the line midway, no toe on the floor between them.
+    const raised = (offs) => {
+      const mp2 = meshPoints(t0, floor, railSec.half, 20);
+      for (let k = 0; k < mp2.count; k++) {
+        mp2.points[k * 16 + 9] = offs.length;
+        for (let i = 0; i < 6; i++) mp2.points[k * 16 + 10 + i] = offs[i] ?? 0;
+      }
+      const q = buildTunnelMesh(core, { origin: [...origin], ends: [MESH_END.PORTAL, MESH_END.PORTAL], spring: railSec.spring, ringStep: 25, collar: 0.8,
+        collarDepth: 2, gauge: railLook.gauge, bedTop: 0.30 }, mp2.points, railSec.points);
+      const f = new Float32Array(q.vertices.buffer, q.vertices.byteOffset, q.vertices.byteLength / 4);
+      const s = new Int16Array(q.vertices.buffer, q.vertices.byteOffset, q.vertices.byteLength / 2);
+      let headLo = Infinity, headHi = -Infinity, foot = Infinity, top = -Infinity, toe = 0, between = 0;
+      for (let v = 0; v < q.vertexCount; v++) {
+        const m = s[v * 26 + 9], a = f[v * 13 + 6], h = f[v * 13 + 7];
+        if (m === 9) { if (h > 0.4) { headLo = Math.min(headLo, h); headHi = Math.max(headHi, h); } else foot = Math.min(foot, h); }
+        if (m !== 12) continue;
+        if (h > 0.1) top = Math.max(top, h);
+        else { toe = Math.max(toe, Math.abs(a)); if (Math.abs(a) < 0.5) between++; }
+      }
+      return { headLo, headHi, foot, top, toe, between };
+    };
+    const lone = raised([0]), shared = raised([-2.1, 2.1]);
+    railLine += `; on a raised bed the rails' heads ${lone.headLo.toFixed(3)}..${lone.headHi.toFixed(3)} m up (their feet ${lone.foot.toFixed(3)}), its top ` +
+      `${lone.top.toFixed(3)} m, its toes ${lone.toe.toFixed(2)} m out; for 2 lines 4.2 m apart ${shared.toe.toFixed(2)} m out, ${shared.between} on the floor between them`;
+    if (!(Math.abs(lone.headLo - 0.467) < 1e-3 && Math.abs(lone.headHi - 0.467) < 1e-3 && Math.abs(lone.foot - 0.295) < 1e-3 && Math.abs(lone.top - 0.295) < 1e-3 &&
+          Math.abs(lone.toe - 2.14) < 0.01 && Math.abs(shared.toe - 4.24) < 0.01 && shared.between === 0)) {
+      problems.push(`raised bed: heads ${lone.headLo}..${lone.headHi}, feet ${lone.foot}, top ${lone.top}, toes ${lone.toe} (2 lines: ${shared.toe}, ${shared.between} between)`);
     }
     // (5.17t) A portal's cutting: 20 m out of the collar at the first end, its walls 4 m either side of the middle,
     // the left 5 m high falling to 0.5 m, the right 3 m with the ground beside it falling to 2 m under the floor (5.17v:

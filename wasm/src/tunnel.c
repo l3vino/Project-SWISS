@@ -97,7 +97,9 @@ typedef struct {
                            * per end with a cutting, two a place (left, right, metres over the floor), then their
                            * feet the same way (under it, 5.17v), then HEAD_N across its headwall (from its left
                            * wall to its right, over the floor)) */
-} TunnelSpec;             /* 152 bytes */
+  float bedTop;           /* metres a railway's ballast bed stands over the floor, as the open track's does (5.18c:
+                           * track.c BED_TOP), so the open track runs straight in; 0: its bed drawn on the floor */
+} TunnelSpec;             /* 160 bytes (156 and the padding to a double) */
 
 enum { END_JOIN = 0, END_PORTAL = 1, END_WALL = 2, END_DARK = 3 };
 /* Metres past a JOIN end its cap stands, in the room it opens into (5 cm: past the other's pieces' end there, which is
@@ -585,32 +587,56 @@ static u32 tracks_at(const Ring *R, double *at) {
 }
 
 #define RAIL_HEAD 0.036     /* half a rail's head (60E1: 72 mm) */
-#define RAIL_HIGH 0.172     /* a rail's height (60E1), standing on the floor drawn (the ballast's, the sleepers') */
+#define RAIL_HIGH 0.172     /* a rail's height (60E1), standing on the bed drawn (the ballast's, the sleepers') */
 #define INSULATOR_HALF 0.05 /* a drop arm's insulator: 0.1 m across, INSULATOR_LONG long over the conductor rail */
 #define INSULATOR_LONG 0.32
+/* A raised bed (5.18c, TunnelSpec.bedTop): as the open track's (track.c), its sides one up in BED_SLOPE across down to
+ * the floor, its top as wide as the sleepers (SLEEPER_OVER beyond the gauge line) and a SHOULDER either side; BED_UNDER
+ * under the open track's, which runs on over the tube's first metres out of its portal, so the two never fight for
+ * the same pixels. */
+#define BED_SLOPE 1.5
+#define SLEEPER_OVER 0.58
+#define SHOULDER 0.40
+#define BED_UNDER 0.005
+
+/* Metres a railway's bed stands over the floor (TunnelSpec.bedTop), 0 drawn on it. */
+static double bedTop;
+
+/* One face of a track's raised bed in ring R: from `a0` metres across at `h0` up to `a1` at `h1`, facing `n`. */
+static void bed_face(Out *o, Frame F, double c, double a0, double h0, double a1, double h1, V3 n, double s, double dl, double dr) {
+  bedAcross = a0;
+  put_vertex(o, add(F.c, add(scale(F.right, c + a0), scale(F.up, h0))), n, MAT_BED, s, c + a0, h0, dl, dr);
+  bedAcross = a1;
+  put_vertex(o, add(F.c, add(scale(F.right, c + a1), scale(F.up, h1))), n, MAT_BED, s, c + a1, h1, dl, dr);
+}
 
 /* The rails of each track (5.17o, his words on 5.17n: "make rails and props more realistic"): two a track, `gauge`
  * either side of its middle to their heads' inner edges, their sides and heads ring to ring where the count of
- * tracks stays; flush with the floor at a portal (the tracks drawn on the approach go on there), standing up from the
- * next ring in. */
+ * tracks stays, standing on its bed. With the bed drawn on the floor they are flush with it at a portal (the tracks
+ * drawn on the approach go on there), standing up from the next ring in; on a raised bed the open track's runs on
+ * into them at the same height. */
 static void rails(Out *o, const Ring *rings, u32 nring, double gauge, u32 end0, u32 end1) {
   u32 prevBase = 0, prevN = 0;
   double at[TRACKS_MOST];
   u8 had[TRACKS_MOST] = { 0 }, has[TRACKS_MOST];
+  const int raised = bedTop > 0.0;
+  const u32 bedVerts = raised ? 6u : 2u;     /* per track and ring: three faces of two, or one strip */
+  const double foot = raised ? bedTop - BED_UNDER : 0.0;   /* where the rails stand */
+  const double topHalf = gauge + SLEEPER_OVER + SHOULDER, toeHalf = topHalf + BED_SLOPE * foot;
   for (u32 r = 0; r < nring; r++) {
     const Ring *R = &rings[r];
     Frame F = frame_of(R);
     way = F.along; boreOff = R->off; boreWide = R->wide > 0.05 ? R->wide : 1.0;
     const u32 n = tracks_at(R, at), base = o->nv;
-    const int flush = (r == 0 && end0 == END_PORTAL) || (r + 1 == nring && end1 == END_PORTAL);
-    const double top = flush ? 0.004 : RAIL_HIGH;
+    const int flush = !raised && ((r == 0 && end0 == END_PORTAL) || (r + 1 == nring && end1 == END_PORTAL));
+    const double top = foot + (flush ? 0.004 : RAIL_HIGH);
     /* (A track not running here keeps its vertices, at the line, unjoined: each keeps its place in the ring.) */
     for (u32 t = 0; t < n; t++) { has[t] = at[t] == at[t]; if (!has[t]) at[t] = 0.0; }
     for (u32 t = 0; t < n; t++) {
       for (int side = -1; side <= 1; side += 2) {
         const double c = at[t] + side * (gauge + RAIL_HEAD);
         /* Its left side, its head, its right side. */
-        const double A[4] = { c - RAIL_HEAD, c - RAIL_HEAD, c + RAIL_HEAD, c + RAIL_HEAD }, H[4] = { 0.0, top, top, 0.0 };
+        const double A[4] = { c - RAIL_HEAD, c - RAIL_HEAD, c + RAIL_HEAD, c + RAIL_HEAD }, H[4] = { foot, top, top, foot };
         for (u32 f = 0; f < 3; f++) {
           V3 nf = f == 0 ? scale(F.right, -1.0) : f == 1 ? F.up : F.right;
           put_at(o, R, F, A[f], H[f], nf, MAT_RAIL, R->s);
@@ -619,11 +645,15 @@ static void rails(Out *o, const Ring *rings, u32 nring, double gauge, u32 end0, 
       }
     }
     /* Each track's bed (5.17q: its sleepers or its slab where it runs, not where the data's line lies: in a curve
-     * the line's straight stretches between its nodes stood off the tube's), a hair over the floor, the next track's
-     * a hair over that. Each knows the nearest track either side (5.17t, in its map position's place: tunnel.wgsl
-     * tTrack), so where tracks part at a switch their beds are one: the sleepers run on under both as long timbers
-     * and each draws the other's rails, clips and shadows (5.17s: the bed on top cut the other's sleepers off at its
-     * edge, his "doesn't connect and intercept correctly"). */
+     * the line's straight stretches between its nodes stood off the tube's), the next track's a hair over it. Each
+     * knows the nearest track either side (5.17t, in its map position's place: tunnel.wgsl tTrack), so where tracks
+     * part at a switch their beds are one: the sleepers run on under both as long timbers and each draws the other's
+     * rails, clips and shadows (5.17s: the bed on top cut the other's sleepers off at its edge, his "doesn't connect
+     * and intercept correctly"). Drawn on the floor, a strip a hair over it; raised, its slope up from the floor, its
+     * top and its slope down again, and where the next track is near enough for the two beds' toes to meet the side
+     * towards it runs level to the line midway between them (one bed, as the open track's: track.c). */
+    const V3 nLeft = add(scale(F.right, -1.0 / 1.803), scale(F.up, BED_SLOPE / 1.803));   /* |(1, 1.5)| = 1.803 */
+    const V3 nRight = add(scale(F.right, 1.0 / 1.803), scale(F.up, BED_SLOPE / 1.803));
     for (u32 t = 0; t < n; t++) {
       double dl = -BED_NONE, dr = BED_NONE;
       for (u32 u = 0; u < n; u++) {
@@ -632,11 +662,22 @@ static void rails(Out *o, const Ring *rings, u32 nring, double gauge, u32 end0, 
         if (d < 0.0 && d > dl) dl = d;
         else if (d >= 0.0 && d < dr) dr = d;
       }
-      for (int side = -1; side <= 1; side += 2) {
-        bedAcross = side * BED_HALF;
-        const double a = at[t] + side * BED_HALF, h = 0.004 + 0.002 * t;
-        put_vertex(o, add(F.c, add(scale(F.right, a), scale(F.up, h))), F.up, MAT_BED, R->s, a, h, dl, dr);
+      const double hair = 0.002 * t;
+      if (!raised) {
+        for (int side = -1; side <= 1; side += 2) {
+          bedAcross = side * BED_HALF;
+          const double a = at[t] + side * BED_HALF, h = 0.004 + hair;
+          put_vertex(o, add(F.c, add(scale(F.right, a), scale(F.up, h))), F.up, MAT_BED, R->s, a, h, dl, dr);
+        }
+        continue;
       }
+      double wl = topHalf, xl = toeHalf, wr = topHalf, xr = toeHalf;
+      if (-dl < 2.0 * toeHalf) wl = xl = -dl * 0.5;
+      if (dr < 2.0 * toeHalf) wr = xr = dr * 0.5;
+      const double h = foot + hair;
+      bed_face(o, F, at[t], -xl, xl > wl ? 0.0 : h, -wl, h, nLeft, R->s, dl, dr);
+      bed_face(o, F, at[t], -wl, h, wr, h, F.up, R->s, dl, dr);
+      bed_face(o, F, at[t], wr, h, xr, xr > wr ? 0.0 : h, nRight, R->s, dl, dr);
     }
     bedAcross = 0.0;
     if (r > 0 && prevN == n) {
@@ -649,8 +690,12 @@ static void rails(Out *o, const Ring *rings, u32 nring, double gauge, u32 end0, 
       }
       for (u32 t = 0; t < n; t++) {
         if (!has[t] || !had[t]) continue;
-        const u32 p0 = prevBase + 2u * n * 3u * 2u + t * 2u, c0 = base + 2u * n * 3u * 2u + t * 2u;
-        quad_facing(o, p0, p0 + 1u, c0 + 1u, c0, F.up);
+        const u32 p0 = prevBase + 2u * n * 3u * 2u + t * bedVerts, c0 = base + 2u * n * 3u * 2u + t * bedVerts;
+        if (!raised) { quad_facing(o, p0, p0 + 1u, c0 + 1u, c0, F.up); continue; }
+        for (u32 f = 0; f < 3u; f++) {
+          const u32 a = p0 + 2u * f, b = c0 + 2u * f;
+          quad_facing(o, a, a + 1u, b + 1u, b, f == 0 ? nLeft : f == 1 ? F.up : nRight);
+        }
       }
     }
     prevBase = base; prevN = n;
@@ -1012,6 +1057,7 @@ EXPORT u32 tunnel_mesh(u32 specOff, u32 pointsOff, u32 profileOff, u32 resOff) {
   TunnelResult *res = (TunnelResult *)PTR(resOff);
   memset(res, 0, sizeof(TunnelResult));
   floorHalf = spec->floorHalf; sectionHalf = spec->half; kerbHeight = spec->kerb;
+  bedTop = spec->bedTop > 0.0f ? spec->bedTop : 0.0;
   const u32 np = spec->pointCount, nq = spec->profileCount;
   if (np < 2 || nq < 3 || nq > PROFILE_MOST) return (res->status = TUNNEL_BAD);
   const double step = spec->ringStep > 0.5f ? spec->ringStep : 25.0;
@@ -1114,19 +1160,19 @@ EXPORT u32 tunnel_mesh(u32 specOff, u32 pointsOff, u32 profileOff, u32 resOff) {
   Out o;
   o.ox = spec->originX; o.oy = spec->originY; o.oz = spec->originZ;
   o.capV = nring * nr + shellLoops * nr + 2u * (2u * 2u * nr) + 2u * (4u * nr + 8u) + 2u * (nr + 1u) + 2u * 32u + 4u * nring +
-    2u * (nr + 4u) + (contact > 0 ? nring * TRACKS_MOST * (8u + 32u) : 0) + (spec->gauge > 0 ? nring * TRACKS_MOST * 14u : 0) +
+    2u * (nr + 4u) + (contact > 0 ? nring * TRACKS_MOST * (8u + 32u) : 0) + (spec->gauge > 0 ? nring * TRACKS_MOST * 18u : 0) +
     fanCount * 2u * (16u + 18u + 16u) + lampCount * 20u + (spec->handrail > 0 ? nring * 16u : 0) + 16u;
   for (u32 e = 0; e < 2; e++) {
     const u32 n = cutN[e];
-    if (n) o.capV += 2u * n + 26u * n + (nr + 2u * HEAD_N + 8u) * 4u + (spec->gauge > 0 ? n * TRACKS_MOST * 14u : 0) + 16u;
+    if (n) o.capV += 2u * n + 26u * n + (nr + 2u * HEAD_N + 8u) * 4u + (spec->gauge > 0 ? n * TRACKS_MOST * 18u : 0) + 16u;
   }
   o.capI = (nring > 1 ? (nring - 1) * nr * 6u : 0) + shellLoops * nr * 6u + 2u * (2u * nr * 6u) + 2u * (6u * nr + 12u) +
     2u * (nr * 3u) + 2u * 48u + nring * 12u + 2u * 3u * (nr + 3u) + (contact > 0 ? nring * TRACKS_MOST * (24u + 48u) : 0) +
-    (spec->gauge > 0 ? nring * TRACKS_MOST * 42u : 0) +
+    (spec->gauge > 0 ? nring * TRACKS_MOST * 54u : 0) +
     fanCount * 2u * (48u + 48u + 24u) + lampCount * 30u + (spec->handrail > 0 ? nring * 48u : 0) + 16u;
   for (u32 e = 0; e < 2; e++) {
     const u32 n = cutN[e];
-    if (n) o.capI += 6u * n + 40u * n + (nr + 2u * HEAD_N + 8u) * 6u + (spec->gauge > 0 ? n * TRACKS_MOST * 42u : 0) + 16u;
+    if (n) o.capI += 6u * n + 40u * n + (nr + 2u * HEAD_N + 8u) * 6u + (spec->gauge > 0 ? n * TRACKS_MOST * 54u : 0) + 16u;
   }
   u32 vOff = arena_alloc(o.capV * TUNNEL_STRIDE), iOff = arena_alloc(o.capI * 4u);
   if (!vOff || !iOff) return (res->status = TUNNEL_OOM);

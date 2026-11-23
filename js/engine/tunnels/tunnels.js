@@ -122,6 +122,9 @@ const JOIN_MATCH = 60, PORTAL_MATCH = 100;
 const GROUNDS_MOST = 256;
 /* The Web Mercator zoom a mesh's positions on the map are in (the pass scales them to the photos'). */
 const MESH_ZOOM = 20;
+/* Metres a railway tube's ballast bed stands over its floor with the open track in 3D: the open bed's (track.c
+ * BED_TOP), whose ground is pinned to the floor at the portal (5.18c). */
+const TRACK_BED = 0.30;
 /* Metres round a portal the terrain's tiles are drawn from both sides at least (5.17b's reach). */
 const PORTAL_REACH = 60;
 /* Metres of open approach between a portal and its tube's collar from which on it is drawn as the tube's floor
@@ -147,6 +150,7 @@ export class TunnelSet {
     this.sink = sink;
     this.client = scheduler.client('tunnels', { weight: 1, pick: (cls) => this.#pick(cls) });
     this.enabled = true;
+    this.trackBed = TRACK_BED;     // metres a railway tube's bed stands over its floor (setTrack)
     this.records = new Map();      // tube key → record
     this.retiring = [];            // records gone, drawn until the tubes taking their place are (r.successors)
     this.wholes = [];              // whole tunnels traced this session
@@ -177,6 +181,12 @@ export class TunnelSet {
   setEnabled(on) {
     this.enabled = on;
     if (!on) { this.client.cancelAll(); this.#clear(); this.seenVersion = -1; }
+  }
+
+  /** Whether the open track is built in 3D (the setting): a railway tube's bed then stands as high as its (5.18c),
+   *  else lies on the floor; each tube is made again (its signature holds the bed's height). */
+  setTrack(on) {
+    this.trackBed = on ? TRACK_BED : 0;
   }
 
   /** Once a frame: notices new tunnels and keeps every tube's state moving. */
@@ -443,7 +453,7 @@ export class TunnelSet {
     r.unplaced = false;
     // (And where the ground as cut has its tubes start at most: trimStarts.)
     const starts = near.ends.map((n) => (n.type === TUBE_END.PORTAL ? this.starts.get(portalKey(n, near.family)) : undefined));
-    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}`;
+    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}`;
     if (sig === r.sig || r.meshBusy) return;
     r.sig = sig;
     const at = r.wholeAt ?? { s0: 0, sign: 1 };
@@ -964,6 +974,8 @@ export class TunnelSet {
       // walkways give way where the bore is stretched for a line beside it (tunnel.c walkway_at; sections.js
       // outlineAt gives the cut the same).
       if (look.look === LOOK.RAIL) Object.assign(spec, { floorHalf: sec.low.inner ?? sec.low.half, half: sec.low.half, kerb: sec.walkway > 0 ? sec.kerb : 0 });
+      // Its tracks on a ballast bed as high as the open track's, so that runs straight in (5.18c: tunnel.c bedTop).
+      if (look.look === LOOK.RAIL) spec.bedTop = this.trackBed;
       // Its portals' cuttings (5.17t, tunnel.c `cutting`): from the ground out of each collar; until that ground is
       // here, the mesh waits (its tiles fetched first as the tube's: #pick).
       const cuttings = this.#cuttings(r, mp, sec, spec.collar);

@@ -46,7 +46,8 @@ struct Tile {
   heights   : vec2f,   // min, max, metres
   mercX     : vec2f,   // west edge and width, imagery reference pixels
   mercY     : vec3f,   // y(v) = x + y v + z v^2, imagery reference pixels
-  mask      : u32,     // quarters drawn by finer children instead: bit 0 east, bit 1 north; bits 8, 9: portals[0], [1] used
+  mask      : u32,     // quarters drawn by finer children instead: bit 0 east, bit 1 north; bits 8, 9: portals[0], [1] used;
+                       // bit 10: the bores reaching it are in its cut slot (track.wgsl: the track left out inside them)
   portals   : array<Portal, 2>,
 };
 

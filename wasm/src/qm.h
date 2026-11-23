@@ -96,14 +96,15 @@ typedef struct {
 /* Builds it over a parsed tile, in the arena. */
 u32 ground_build(const QmMesh *m, QmGround *res);
 
-/* A piece of a railway's track on the ground as the render thread sends it (js/engine/vector/pieces.js
- * TRACK_FLOATS): nine floats. */
+/* A piece of a railway's track as the render thread sends it (js/engine/vector/pieces.js TRACK_FLOATS): eleven
+ * floats. */
 typedef struct {
   float u0, v0, u1, v1;   /* its ends, in the tile's quantized units (may lie beyond it) */
   float a0, a1;           /* metres along its line at the ends */
   float gauge;            /* half its gauge, metres */
   float flags;            /* TRACK_PIECE_RACK */
   float line;             /* its line, as its road pieces have it */
+  float h0, h1;           /* where it lies on a bridge's deck, the deck's top at its ends (5.18c); NaN on the ground */
 } TrackPiece;
 #define TRACK_PIECE_RACK 1u
 

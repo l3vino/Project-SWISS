@@ -4,13 +4,19 @@
 # You do not need to run this. core.wasm is committed and the app loads it
 # directly. Run it only if you edit the C.
 #
-# Needs: clang 15+, wasm-ld (package `lld`), and optionally wasm-opt (`npm i -g binaryen`).
+# Needs: clang 15+ with wasm-ld: the one in ../.toolchain if it is there (wasi-sdk, unpacked in the project folder and
+# kept out of git: Stage 5.18c), else clang on the PATH; optionally wasm-opt (binaryen) on the PATH.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 OUT=core.wasm
 
-clang \
+CLANG=clang
+for c in ../.toolchain/wasi-sdk-*/bin/clang.exe ../.toolchain/wasi-sdk-*/bin/clang; do
+  if [ -x "$c" ]; then CLANG="$c"; break; fi
+done
+
+"$CLANG" \
   --target=wasm32-unknown-unknown \
   -O3 -flto -msimd128 -mbulk-memory \
   -nostdlib -ffreestanding \

@@ -22,6 +22,11 @@
  * deck's end, on a bank (the gaps), so the road runs on instead of stopping
  * in the air. A bridge with no deck in any tile loaded (the layer off, or
  * not in yet) gets nothing, and is looked at again when decks come.
+ *
+ * A railway's track runs on over the deck (track.c, 5.18c): along each
+ * railway's run of bridge the deck's top is followed the same way, from
+ * where it starts to where it ends, and kept where it bends (deckProfile);
+ * the track's pieces over it carry its height (pieces.js).
  */
 
 import { BLOCK, segmentArcs } from '../../formats/vector-tile.js';
@@ -40,6 +45,10 @@ export const PIN_BELOW = 0.05;
 /* A deck stopping more than this short of the line's bridge is not made up
  * for with a bank (metres): that is more than a mismatch of two sources. */
 const GAP_MOST = 25;
+/* A deck's profile keeps a point where the straight line between its neighbours strays from the deck by more than
+ * this (metres; track.c keeps its sections the same way), and keeps them at most this far apart (metres). */
+const PROFILE_TOL = 0.012;
+const PROFILE_LONGEST = 40;
 /* Floats per pin: x, y (the block's tile units), s along its line, height,
  * the deck's grade there (rise per metre of s), line, and the side of s
  * the ground is on (+1 beyond it, -1 before it). */
@@ -81,14 +90,18 @@ export function bridgeRuns(cpu) {
 }
 
 /**
- * The pins and gaps of a block's bridges (see the top), from the decks known
- * now: { pins: Float32Array (PIN_FLOATS each) or null, gaps: Map of segment
- * → [s from, s to] or null, sig: a number that changes when they do }.
+ * The pins and gaps of a block's bridges (see the top), and the decks' tops
+ * along its railways' bridges, from the decks known now: { pins: Float32Array
+ * (PIN_FLOATS each) or null, gaps: Map of segment → [s from, s to] or null,
+ * profiles: Map of segment → its run's deckProfile or null, sig: a number
+ * that changes when they do }.
  * @param cpu    { block, z, x, y } (a detail tile's CPU copy)
  * @param runs   bridgeRuns(cpu.block)
  * @param decks  features/decks.js
+ * @param kinds  the road kinds by number (tiles.js shapeKinds): those with a gauge are railways, whose track runs on
+ *               over the deck; null for none
  */
-export function pinsFor(cpu, runs, decks) {
+export function pinsFor(cpu, runs, decks, kinds = null) {
   const block = cpu.block;
   const u32 = new Uint32Array(block.buffer, block.byteOffset, block.byteLength >>> 2);
   const f32 = new Float32Array(block.buffer, block.byteOffset, block.byteLength >>> 2);
@@ -121,13 +134,13 @@ export function pinsFor(cpu, runs, decks) {
   };
 
   const pins = [];
-  let gaps = null, h = 2166136261;
+  let gaps = null, profiles = null, h = 2166136261;
   const nodes = [], box = [0, 0, 0, 0];
   const cosLat = Math.cos(((latOf(cpu.y / n) + latOf((cpu.y + 1) / n)) / 2) * Math.PI / 180);
   const padLat = (BEYOND + INSIDE + 10) / 111132, padLon = padLat * 111132 / (111320 * cosLat);
   // The deck tiles over the whole tile first: none, and there is nothing to join.
   const near = decks.near([lonOf(cpu.x / n) - padLon, latOf((cpu.y + 1) / n) - padLat, lonOf((cpu.x + 1) / n) + padLon, latOf(cpu.y / n) + padLat]);
-  if (!near.length) return { pins: null, gaps: null, sig: 0 };
+  if (!near.length) return { pins: null, gaps: null, profiles: null, sig: 0 };
   for (const run of runs) {
     // The deck tiles round this run (its segments, and as far as a deck is
     // followed past its ends), the only ones its heights are asked of.
@@ -149,6 +162,7 @@ export function pinsFor(cpu, runs, decks) {
       if (b[0] <= box[2] && b[2] >= box[0] && b[1] <= box[3] && b[3] >= box[1]) nodes.push(node);
     }
     if (!nodes.length) continue;
+    let deckFrom = NaN, deckTo = NaN;   // where the deck was followed to at either end
     for (const dir of [-1, 1]) {
       const end = dir < 0 ? run.sA : run.sB;
       hint = dir < 0 ? run.first - run.lineFirst : run.first - run.lineFirst + run.count - 1;
@@ -169,6 +183,7 @@ export function pinsFor(cpu, runs, decks) {
         sLast = s; zLast = zz; xLast = p.x; yLast = p.y;
       }
       const zPin = zLast - PIN_BELOW, grade = Math.abs(sLast - sBack) > 1.5 ? (zLast - zBack) / (sLast - sBack) : 0;
+      if (dir < 0) deckFrom = sLast; else deckTo = sLast;
       pins.push(xLast, yLast, sLast, zPin, Math.max(-0.15, Math.min(0.15, grade)), run.line, dir);
       // The signature moves with the pin by half a metre along and a tenth
       // up or down (a finer level of the deck's tiles moves it by
@@ -189,6 +204,55 @@ export function pinsFor(cpu, runs, decks) {
         }
       }
     }
+    // A railway's track runs on over the deck: its top along the run, between where it was followed to at either
+    // end (the run's own end where it was not found there), shared by the run's segments.
+    const kind = kinds ? kinds[u32[segs + run.first * 8 + 6] & 63] : null;
+    if (kind && kind.gauge > 0 && (deckFrom === deckFrom || deckTo === deckTo)) {
+      const lo = deckFrom === deckFrom ? Math.max(run.sA, deckFrom) : run.sA;
+      const hi = deckTo === deckTo ? Math.min(run.sB, deckTo) : run.sB;
+      const profile = deckProfile(run, pointAt, decks, nodes, lo, hi);
+      if (profile) {
+        profiles ??= new Map();
+        for (let k = 0; k < run.count; k++) profiles.set(run.first + k, profile);
+        // (The signature moves with it by half a metre along and a tenth up or down, as with the pins.)
+        for (let k = 0; k < profile.length; k += 2) {
+          h = Math.imul(h ^ (Math.round(profile[k] * 2) * 31 + Math.round(profile[k + 1] * 10)), 16777619);
+        }
+      }
+    }
   }
-  return { pins: pins.length ? Float32Array.from(pins) : null, gaps, sig: pins.length ? (h >>> 0) || 1 : 0 };
+  return { pins: pins.length ? Float32Array.from(pins) : null, gaps, profiles, sig: pins.length || profiles ? (h >>> 0) || 1 : 0 };
+}
+
+/**
+ * The deck's top along a railway's bridge run from s = lo to hi (metres along its line), followed STEP by STEP as a
+ * run's ends are (the same deck within SAME_DECK of the last point), kept where it bends by more than PROFILE_TOL:
+ * Float32Array [s, top, …] (pieces.js: the track's pieces over the deck), or null where no deck is found.
+ * @param pointAt  (run, s) → { lon, lat } or null (pinsFor's)
+ */
+function deckProfile(run, pointAt, decks, nodes, lo, hi) {
+  if (!(hi - lo > 0.5)) return null;
+  const S = [], Z = [];
+  let zLast = NaN;
+  for (let s = lo; ; s = Math.min(hi, s + STEP)) {
+    const p = pointAt(run, s);
+    const z = p ? decks.heightAt(p.lon, p.lat, zLast, SAME_DECK, nodes) : NaN;
+    if (!Number.isNaN(z)) { S.push(s); Z.push(z); zLast = z; }
+    else if (S.length) break;   // the deck ends here (or the tiles holding it do): so does the track
+    if (s >= hi) break;
+  }
+  if (S.length < 2) return null;
+  const out = [S[0], Z[0]];
+  let last = 0;
+  for (let k = 1; k + 1 < S.length; k++) {
+    const j = k + 1;
+    let fits = S[j] - S[last] <= PROFILE_LONGEST;
+    for (let q = last + 1; fits && q < j; q++) {
+      const t = (S[q] - S[last]) / (S[j] - S[last]);
+      fits = Math.abs(Z[last] + (Z[j] - Z[last]) * t - Z[q]) <= PROFILE_TOL;
+    }
+    if (!fits) { out.push(S[k], Z[k]); last = k; }
+  }
+  out.push(S[S.length - 1], Z[Z.length - 1]);
+  return Float32Array.from(out);
 }

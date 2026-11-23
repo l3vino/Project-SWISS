@@ -52,7 +52,7 @@ import { LruList } from '../lru.js';
 import { GpuPool } from './pool.js';
 import { VectorSource } from './source.js';
 import { schemaTables, BLOCK } from '../../formats/vector-tile.js';
-import { piecesFor, PIECE_FLOATS, TRACK_FLOATS } from './pieces.js';
+import { piecesFor, neighboursIn, PIECE_FLOATS, TRACK_FLOATS } from './pieces.js';
 import { bridgeRuns, pinsFor, PIN_FLOATS } from './bridges.js';
 import { portalPinsFor, joinPins, floorNear, floorKey } from './portals.js';
 
@@ -681,14 +681,15 @@ export class VectorTiles {
       if (t.state !== READY || !t.cpu) continue;
       t.bridges ??= bridgeRuns(t.cpu);
       const was = t.deckStamp ?? 0;
-      if (!t.bridges.length) { t.deckPins = t.cpu.gaps = null; t.deckStamp = 0; }
+      if (!t.bridges.length) { t.deckPins = t.cpu.gaps = t.cpu.decks = null; t.deckStamp = 0; }
       else {
         const t0 = performance.now();
-        const { pins, gaps, sig } = pinsFor(t.cpu, t.bridges, decks);
+        const { pins, gaps, profiles, sig } = pinsFor(t.cpu, t.bridges, decks, this.shapeKinds);
         const ms = performance.now() - t0, w = this.deckWork;
         w.tiles++; w.ms += ms; if (ms > w.worst) w.worst = ms;
         t.deckPins = pins;
         t.cpu.gaps = gaps;
+        t.cpu.decks = profiles;   // the decks' tops along its railways' bridges (pieces.js: the track over them)
         t.deckStamp = sig;
       }
       t.cpu.pins = joinPins(t.deckPins, t.portalPins ?? null);
@@ -795,7 +796,8 @@ export class VectorTiles {
     if (t.level === 0) {
       // With the distances along its lines and its runs of bridge, which the
       // decode thread worked out (formats/vector-tile.js segmentArcs, bridges.js).
-      t.cpu = { block: block.slice(0, size), z: t.z, x: t.x, y: t.y, id: 0, pins: null, gaps: null, widen: null, aprons: null, arcs: result.arcs ?? undefined };
+      t.cpu = { block: block.slice(0, size), z: t.z, x: t.x, y: t.y, id: 0, owners: 0, pins: null, gaps: null, decks: null,
+        widen: null, aprons: null, arcs: result.arcs ?? undefined };
       this.cpuBytes += size + (result.arcs?.byteLength ?? 0);
       t.widths = 0;
       t.stamp = t.widthStamp = t.deckStamp = t.portalStamp = 0;
@@ -992,6 +994,8 @@ export class VectorTiles {
     for (let i = 0; i < tiles.length; i++) {
       if (!tiles[i]) continue;
       tiles[i].cpu.id = i;
+      // Its neighbours cut in too: the parts of its lines over their squares are theirs (pieces.js, 5.18c).
+      tiles[i].cpu.owners = neighboursIn(tiles, tiles[i]);
       piecesFor([tiles[i].cpu], rect, this.shapeKinds, this.halfWidths, out, tracks);
     }
     return {

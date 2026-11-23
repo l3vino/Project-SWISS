@@ -9,8 +9,9 @@
  *
  * From the render thread: 'init' (the compiled core), 'enabled', 'camera' (where it is, when it moves), 'roads' (the
  * road service's templates and schema), 'runs' (the detail tiles' tunnel runs as they come and go), 'decks' (the
- * bridges' decks as they come and go: portal floors on their own decks), 'checks' (what its checks of the portals
- * against the ground as drawn found: portal-checks.js), 'report' (for the probe).
+ * bridges' decks as they come and go: portal floors on their own decks), 'track' (whether the open track is built in
+ * 3D: a railway tube's bed as high as its, 5.18c), 'checks' (what its checks of the portals against the ground as
+ * drawn found: portal-checks.js), 'report' (for the probe).
  * To it: 'mesh' (a request: a mesh's vertices and indices, transferred, its fields and the copy of its tube as placed;
  * answered once its buffers are on the GPU), 'mesh-unused', 'lists' (after every change: the meshes drawn in order,
  * the portals, the bores' meetings, the portal floors for the road tiles).
@@ -35,6 +36,7 @@ const rpc = new Endpoint(self, 'tunnels');
 const ctx = { core: null };
 let set = null, scheduler = null, ticking = 0;
 let listsDue = null;     // the latest lists, sent at the end of the turn (one message for many changes)
+let trackOn = true;      // the open track in 3D (the setting; kept for a set made after it came)
 const camera = { lon: 0, lat: 0 };
 
 /* The road tiles as far as the tunnels go (TunnelSet's `vector`), as the render thread tells them. */
@@ -72,6 +74,7 @@ rpc.on('init', async ({ wasmModule }) => {
   const core = ctx.core;
   scheduler = new LocalScheduler({ ...tunnelJobs(ctx), 'terrain-ground': (payload, signal) => groundJob(core, payload, signal) });
   set = new TunnelSet({ scheduler, terrain: { sourceList: sources }, vector: roads, sink });
+  set.setTrack(trackOn);
   ticking = setInterval(tick, TICK_MS);
   return { build: BUILD, name: self.name, sources: sources.map((s) => s.describe()) };
 });
@@ -86,6 +89,8 @@ function tick() {
 }
 
 rpc.on('enabled', ({ on }) => set?.setEnabled(on));
+
+rpc.on('track', ({ on }) => { trackOn = on; set?.setTrack(on); });
 
 rpc.on('camera', ({ lon, lat }) => { camera.lon = lon; camera.lat = lat; });
 

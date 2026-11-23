@@ -47,7 +47,7 @@ export class TunnelView {
     this.checks = new PortalChecks();
     this.insideBore = {};
     // What the thread has been sent (each thing once).
-    this.sent = { lon: NaN, lat: NaN, source: null, tunnelVersion: -1, runs: new Map(), deckEpoch: -1, deckOn: null, decks: new Map() };
+    this.sent = { lon: NaN, lat: NaN, source: null, tunnelVersion: -1, runs: new Map(), deckEpoch: -1, deckOn: null, decks: new Map(), track: null };
     this.deckIds = 0;
     thread.on('mesh', (msg) => this.#mesh(msg));
     thread.on('mesh-unused', ({ id }) => this.#unused(id));
@@ -66,6 +66,11 @@ export class TunnelView {
     this.#sendRoads();
     if (this.vector.tunnelVersion !== this.sent.tunnelVersion) this.#sendRuns();
     if (this.vector.decks) this.#sendDecks(this.vector.decks);
+    // Whether the open track is built in 3D: a railway tube's bed stands as high as its (5.18c).
+    if (this.vector.tracks !== this.sent.track) {
+      this.sent.track = this.vector.tracks;
+      this.thread.send('track', { on: this.vector.tracks });
+    }
     if (camera.lon !== this.sent.lon || camera.lat !== this.sent.lat) {
       this.sent.lon = camera.lon; this.sent.lat = camera.lat;
       this.thread.send('camera', { lon: camera.lon, lat: camera.lat });

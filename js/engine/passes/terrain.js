@@ -54,6 +54,9 @@ const PORTAL_LEAST_LEVEL = 13;
  * the widest would look under CUT_PIXELS wide. */
 const CUT_SLOTS = 96;
 const RESORT = 40, CUT_PIXELS = 0.75;
+/* The tile uniform's mask bit for a tile whose bores are in its cut slot (terrain.wgsl Tile.mask): the track over it
+ * is left out inside them, where the tunnel's own track runs (track.wgsl, 5.18c). */
+const MASK_BORES = 0x400;
 let cutIds = 0;
 /* The railways' track (5.18b): its rails stand as geometry while their 72 mm heads look RAIL_PIXELS wide or more,
  * fading out from RAIL_FADE times that distance (thinner, they would shimmer; the bed's top draws them instead). */
@@ -211,7 +214,7 @@ export class TerrainPass {
         sig += `${t.cut.id},`;
       }
       const bits = !segs && portals.length && t.z >= PORTAL_LEAST_LEVEL ? this.#portalsFor(t, portals, o) : 0;
-      this.tileU32[o + 15] = t.mask | (bits & 0x300);
+      this.tileU32[o + 15] = t.mask | (bits & 0x300) | (segs ? MASK_BORES : 0);
       this.kinds[i] = segs ? 3 : bits ? 2 : t.mask !== 0 ? 1 : 0;
       this.draws.push(t);
       this.triangles += t.indexCount / 3;

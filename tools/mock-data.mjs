@@ -330,7 +330,14 @@ export function searchAnswer(url) {
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const sharp = require(process.env.SHARP_MODULE || '/home/claude/.npm-global/lib/node_modules/sharp');
+/* sharp encodes the stand-in's imagery tiles, loaded when the first one is asked for: the core test imports this
+ * module for the town's numbers alone, on machines without sharp (SHARP_MODULE: its path; else the package; else
+ * the Linux container's global folder). */
+let sharpModule = null;
+const loadSharp = () => {
+  try { return require(process.env.SHARP_MODULE || 'sharp'); } catch { return require('/home/claude/.npm-global/lib/node_modules/sharp'); }
+};
+const sharp = (...args) => (sharpModule ??= loadSharp())(...args);
 
 /* The deepest zoom the stand-in serves. Anything finer answers 400, the way a
  * WMTS answers a zoom outside its matrix set, so the clipmap's handling of a

@@ -46,7 +46,11 @@ struct TrackOut {
   @location(5) @interpolate(flat) gauge : f32,
   @location(6) @interpolate(flat) kind  : u32,
   @location(7) rise   : f32,     // how far up its profile: 0 a rail's foot or the bed's toe, 1 a head or the bed's top
+  @location(8) rel    : vec3f,   // from the tile's origin, metres (earth-centred axes): for the bores (inBore)
 };
+
+// Tile.mask's bit for a tile whose bores are in its cut slot (passes/terrain.js MASK_BORES).
+const TRACK_MASK_BORES : u32 = 0x400u;
 
 @vertex
 fn vsTrack(@location(0) position : vec3f, @location(1) uv : vec2f, @location(2) along : f32,
@@ -62,6 +66,7 @@ fn vsTrack(@location(0) position : vec3f, @location(1) uv : vec2f, @location(2) 
   out.gauge = across.y * TRACK_SPAN;
   out.kind = u32(kind.x * 255.0 + 0.5);
   out.rise = kind.z;
+  out.rel = position;
   return out;
 }
 
@@ -103,6 +108,9 @@ fn fsTrack(in : TrackOut) -> @location(0) vec4f {
   var gone = smoothstep(0.8 * trackInfo.reach, trackInfo.reach, d);
   if (in.kind != TRACK_BED) { gone = max(gone, smoothstep(trackInfo.railNear, trackInfo.railFar, d)); }
   if (((tile.mask >> quarter) & 1u) != 0u || gone > trackDither(in.clip.xy)) { discard; }
+  // Inside a tunnel's bore, where the ground is left out too, the tunnel's own track runs (5.18c: tunnel.c rails, on
+  // a bed as high as this one), so the two meet where the bore begins instead of lying one over the other.
+  if ((tile.mask & TRACK_MASK_BORES) != 0u && inBore(in.rel) == 1u) { discard; }
 
   let up = localUp(in.world);
   // The face's own normal, turned to the eye (back faces are culled: what shows faces it).

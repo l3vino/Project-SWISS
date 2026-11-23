@@ -6,3 +6,5 @@ node_modules/
 /README.md
 /docs/
 /.claude/
+# The C compiler wasm/build.sh uses (wasi-sdk: clang and wasm-ld, unpacked here)
+/.toolchain/

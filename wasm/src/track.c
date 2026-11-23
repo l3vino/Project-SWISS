@@ -20,6 +20,13 @@
  * across the road's level width and CROSS_MARGIN either side, easing back over CROSS_RAMP: a level crossing, not
  * a wall across the road.
  *
+ * (5.18c) A piece over a bridge's deck carries the deck's top at its ends (pieces.js, from bridges.js): its bed
+ * stands BED_TOP over DECK_BELOW under that, where the ground is pinned as the line comes off the deck, so the track
+ * runs on over the bridge at the height it has either side. And where another track runs nearly alongside, nearer
+ * than the two beds' toes reach (a switch, a second track), the side of the bed towards it runs level to the line
+ * midway between the two, at the higher of their tops there, with a lip on under the other's: one bed, where the two
+ * overlapping showed each other's slopes through their tops.
+ *
  *   offset  0   position  float32x3  metres from the tile origin (qm.c's)
  *   offset 12   uv        unorm16x2  where it lies on the tile (terrain.wgsl's quarters)
  *   offset 16   along     float32    metres along its line (the sleepers)
@@ -50,12 +57,18 @@
 #define FLUSH_HIGH 0.012    /* a rail's head over the road at a level crossing */
 #define BED_SINK 0.05       /* and the bed's top under it */
 #define BED_BIAS 0.001      /* metres a line's bed lies over the next one's (by its number), so two at a switch never flicker */
+#define DECK_BELOW 0.05     /* the ground pinned under a deck's top where a line comes off it (bridges.js PIN_BELOW) */
 
 #define STEP 1.0            /* metres between the samples along a piece */
 #define TOL 0.012           /* a section is left out where the line between its neighbours passes within this */
+#define WIDE_TOL 0.02       /* metres a bed's side may stray from the line between two kept sections */
 #define LONGEST 40.0        /* metres between sections at most */
 #define JOIN 0.05           /* metres apart two ends may be and be one joint */
 #define NEAR 1.5            /* an end this near another track's middle or end is at a switch: not closed */
+#define PARALLEL 0.966      /* tracks closer to parallel than this (the cosine of 15 degrees) can share one bed */
+#define APART_LEAST 0.05    /* metres apart their middles must be to share one (nearer: the same track twice) */
+#define LIP 0.05            /* metres a shared bed's top runs on past the line midway, under the other's top, */
+#define LIP_DROP 0.01       /* falling this much on the way: no crack between the two, and no fight for the pixels */
 #define CROSS_MARGIN 0.5    /* metres past a road's level width the track is flush */
 #define CROSS_RAMP 3.0      /* metres it eases back to the full bed */
 #define CROSS_ON 0.3        /* a crossing lies on a piece's line within this (metres) */
@@ -65,6 +78,7 @@
 
 enum { TRACK_BED = 0, TRACK_RAIL = 1, TRACK_RACK = 2 };
 #define SECTION_MOST 16u    /* vertices a section has at most: the bed's 4, two rails' 8, a rack's 4 */
+#define SAMPLE_ARRAYS 15u   /* numbers kept per sample (track_build) */
 
 typedef struct {
   double u0, v0, du, dv;    /* the piece inside the tile, quantized units */
@@ -72,10 +86,13 @@ typedef struct {
   double len;               /* metres */
   double a0, a1;            /* metres along its line at its ends */
   double gauge;             /* half its gauge, metres */
+  double h0, h1;            /* over a bridge's deck: the deck's top at its ends, metres */
   u32 flags, line;
+  u8 deck;                  /* it lies over a deck (no ground under it, no level crossings) */
   u8 edge[2];               /* the end is on the tile's edge */
   u8 joined[2];             /* another piece goes on from it */
   u8 near[2];               /* another track's middle or end is near it (a switch) */
+  int partner[2];           /* the piece going on from each end, -1 none */
   double rx[2], ry[2];      /* the right of the way at each end, metres east and north, as long as the mitre makes it */
 } Piece;
 
@@ -160,6 +177,65 @@ INLINE i16 snorm_of(double x) {
 INLINE u32 hash_u32(u32 x) {
   x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
   return x;
+}
+
+/* A bed's half-widths for half a gauge: its top (the sleepers and a shoulder), its toes (down its slopes). */
+INLINE double top_half(double gauge) { return gauge + SLEEPER_OVER + SHOULDER; }
+INLINE double toe_half(double gauge) { return top_half(gauge) + BED_SLOPE * (BED_TOP + BED_FOOT); }
+/* Metres a line's bed lies over the next one's (BED_BIAS). */
+INLINE double bias_of(u32 line) { return (double)(hash_u32(line) & 3u) * BED_BIAS; }
+
+/* Whether sample q of `a` lies within `tol` of the straight line between samples `last` and `j` (t: q's place
+ * between them). */
+INLINE int on_line(const double *a, u32 last, u32 j, u32 q, double t, double tol) {
+  return m_abs(a[last] + (a[j] - a[last]) * t - a[q]) <= tol;
+}
+
+/* The ground under a sample of a track across (qu, qv) (its right, quantized units a metre): under its middle and its
+ * rails, and the highest and lowest of those and of its shoulders. */
+typedef struct { double c, rl, rr, hi, lo; } Under;
+
+static void under_at(const Ground *gr, double gauge, double u, double v, double qu, double qv, Under *w) {
+  const double rail = gauge + RAIL_HEAD, shoulder = top_half(gauge);
+  w->c = ground_at(gr, u, v);
+  w->rl = ground_at(gr, u - qu * rail, v - qv * rail);
+  w->rr = ground_at(gr, u + qu * rail, v + qv * rail);
+  const double sl = ground_at(gr, u - qu * shoulder, v - qv * shoulder), sr = ground_at(gr, u + qu * shoulder, v + qv * shoulder);
+  const double four[4] = { w->rl, w->rr, sl, sr };
+  double hi = w->c, lo = w->c;
+  for (int k = 0; k < 4; k++) { if (four[k] > hi) hi = four[k]; if (four[k] < lo) lo = four[k]; }
+  w->hi = hi; w->lo = lo;
+}
+
+/* Piece p's bed's top (as away from a level crossing) a fraction f along it. */
+static double full_top(const Piece *p, const Ground *gr, double f, double mu, double mv) {
+  if (p->deck) return p->h0 + (p->h1 - p->h0) * f - DECK_BELOW + BED_TOP + bias_of(p->line);
+  Under w;
+  under_at(gr, p->gauge, p->u0 + p->du * f, p->v0 + p->dv * f, p->ey / mu, -p->ex / mv, &w);
+  return w.hi + BED_TOP + bias_of(p->line);
+}
+
+/* The nearest track beside piece i at (x, y) (metres from the tile's corner), on its right (side > 0) or left:
+ * nearly parallel to it, not a piece it goes on into, its middle nearer than the two beds' toes reach and more than
+ * APART_LEAST off. Its middle's distance (metres; 0 none), its piece in *qi and the fraction along it in *qf. */
+static double beside(const Piece *P, u32 n, u32 i, double x, double y, int side, double mu, double mv, u32 *qi, double *qf) {
+  const Piece *p = &P[i];
+  const double rx = side > 0 ? p->ey : -p->ey, ry = side > 0 ? -p->ex : p->ex;
+  double best = 0;
+  for (u32 j = 0; j < n; j++) {
+    if (j == i || (int)j == p->partner[0] || (int)j == p->partner[1]) continue;
+    const Piece *q = &P[j];
+    if (m_abs(p->ex * q->ex + p->ey * q->ey) < PARALLEL) continue;
+    const double qx = q->u0 * mu, qy = q->v0 * mv;
+    const double t = (x - qx) * q->ex + (y - qy) * q->ey;
+    if (t < 0 || t > q->len) continue;
+    const double d = (qx + q->ex * t - x) * rx + (qy + q->ey * t - y) * ry;
+    if (d <= APART_LEAST || d >= toe_half(p->gauge) + toe_half(q->gauge) || (best > 0 && d >= best)) continue;
+    best = d;
+    *qi = j;
+    *qf = q->len > 0 ? t / q->len : 0;
+  }
+  return best;
 }
 
 /* ---- the builder -------------------------------------------------------------------- */
@@ -310,12 +386,16 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
     p->ex = du * mu / whole; p->ey = dv * mv / whole;
     p->a0 = q->a0 + (q->a1 - q->a0) * t0; p->a1 = q->a0 + (q->a1 - q->a0) * t1;
     p->gauge = q->gauge;
+    p->deck = (u8)(q->h0 == q->h0 && q->h1 == q->h1);
+    p->h0 = p->deck ? q->h0 + (q->h1 - q->h0) * t0 : 0.0;
+    p->h1 = p->deck ? q->h0 + (q->h1 - q->h0) * t1 : 0.0;
     p->flags = (u32)q->flags;
     p->line = (u32)q->line;
     p->edge[0] = (u8)(t0 > 1e-9 || on_edge(p->u0, p->v0));
     p->edge[1] = (u8)(t1 < 1.0 - 1e-9 || on_edge(p->u0 + p->du, p->v0 + p->dv));
     p->joined[0] = p->joined[1] = 0;
     p->near[0] = p->near[1] = 0;
+    p->partner[0] = p->partner[1] = -1;
     p->rx[0] = p->rx[1] = p->ey;          /* right of the way: (ey, -ex) */
     p->ry[0] = p->ry[1] = -p->ex;
     const double xa = p->u0 * mu, ya = p->v0 * mv, xb = (p->u0 + p->du) * mu, yb = (p->v0 + p->dv) * mv;
@@ -350,6 +430,7 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
       if (bj < 0) continue;
       const Piece *q = &P[bj];
       p->joined[e] = 1;
+      p->partner[e] = bj;
       /* The way through the joint as this piece runs, halving the bend; the right of it, as long as keeps the
        * bed's width across this piece. */
       const double s = (e != bf) ? 1.0 : -1.0;
@@ -394,6 +475,7 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
     if (rl < 0.1) continue;
     for (u32 i = 0; i < n && ncr < CROSS_MOST; i++) {
       const Piece *p = &P[i];
+      if (p->deck) continue;   /* (a road on the ground meets a bridge's track nowhere) */
       const double px = p->u0 * mu, py = p->v0 * mv, qx = px + p->ex * p->len, qy = py + p->ey * p->len;
       if ((ax < px && ax < qx && bx < px && bx < qx) || (ax > px && ax > qx && bx > px && bx > qx)) continue;
       if ((ay < py && ay < qy && by < py && by < qy) || (ay > py && ay > qy && by > py && by > qy)) continue;
@@ -424,26 +506,30 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
   o.capV = total * SECTION_MOST;
   o.capI = total * 72u + n * 48u;
   const u32 vOff = arena_alloc(o.capV * TRACK_STRIDE), iOff = arena_alloc(o.capI * 4u);
-  double *S = (double *)PTR(arena_alloc(most * 9u * 8u));
+  double *S = (double *)PTR(arena_alloc(most * SAMPLE_ARRAYS * 8u));
   u8 *keep = (u8 *)PTR(arena_alloc(most));
   if (!vOff || !iOff || !S || !keep) return (res->status = QM_OOM);
   o.vb = (u8 *)PTR(vOff);
   o.ib = (u32 *)PTR(iOff);
-  /* Each sample: how far along, the bed's top, the left and right rails' heads and the rack's, the toes, how flush. */
+  /* Each sample: how far along, the bed's top, the left and right rails' heads and the rack's, the toes, how flush,
+   * the places where crossings begin and end; and each side of the bed: how far out its top reaches, how high its
+   * edge is there, how far out its toe is (5.18c: a side shared with the track beside it runs level to between them). */
   double *Ss = S, *Tt = S + most, *Hl = S + 2u * most, *Hr = S + 3u * most, *Hk = S + 4u * most;
   double *Tl = S + 5u * most, *Tr = S + 6u * most, *Sf = S + 7u * most, *marks = S + 8u * most;
+  double *Wl = S + 9u * most, *Wr = S + 10u * most, *El = S + 11u * most, *Er = S + 12u * most;
+  double *Xl = S + 13u * most, *Xr = S + 14u * most;
 
   u32 sections = 0;
   for (u32 i = 0; i < n; i++) {
     const Piece *p = &P[i];
     const double g = p->gauge, rail = g + RAIL_HEAD;
-    const double topHalf = g + SLEEPER_OVER + SHOULDER, toeHalf = topHalf + BED_SLOPE * (BED_TOP + BED_FOOT);
+    const double topHalf = top_half(g), toeHalf = toe_half(g);
     const int rack = (p->flags & TRACK_PIECE_RACK) != 0;
     const u32 per = rack ? 16u : 12u;
-    const double bias = (double)(hash_u32(p->line) & 3u) * BED_BIAS;
+    const double bias = bias_of(p->line);
 
     /* The samples: every STEP metres, the ends, and where a crossing's flush stretch and easing begin and end. */
-    const u32 nm = crossing_marks(p, mu, mv, cr, ncr, marks, 4u * ncr);
+    const u32 nm = p->deck ? 0u : crossing_marks(p, mu, mv, cr, ncr, marks, 4u * ncr);
     u32 ns = 0, mk = 0;
     const u32 steps = (u32)(p->len / STEP);
     for (u32 k = 0; k <= steps + 1u; k++) {
@@ -464,34 +550,54 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
     /* The ground under each (across the end's own right at a joint): its middle, the rails, the bed's shoulders and
      * toes. The bed's top stands BED_TOP over the highest of the first three, so where the bench is not quite level
      * (beside a tile's edge, a crossing road's own level) it is never buried; at a level crossing it sinks BED_SINK
-     * under the lowest, and each rail's head lies FLUSH_HIGH over the ground under it. */
+     * under the lowest, and each rail's head lies FLUSH_HIGH over the ground under it. Over a deck, the deck's top
+     * instead, and its toes in the deck. */
     for (u32 k = 0; k < ns; k++) {
       const double f = Ss[k] / p->len;
       const double u = p->u0 + p->du * f, v = p->v0 + p->dv * f;
       const int end = k == 0 ? 0 : k == ns - 1u ? 1 : -1;
       const double qu = (end >= 0 ? p->rx[end] : p->ey) / mu, qv = (end >= 0 ? p->ry[end] : -p->ex) / mv;
-      const double c = ground_at(&gr, u, v);
-      const double rl = ground_at(&gr, u - qu * rail, v - qv * rail), rr = ground_at(&gr, u + qu * rail, v + qv * rail);
-      const double sl = ground_at(&gr, u - qu * topHalf, v - qv * topHalf), sr = ground_at(&gr, u + qu * topHalf, v + qv * topHalf);
-      double hi = c, lo = c;
-      const double five[4] = { rl, rr, sl, sr };
-      for (int q = 0; q < 4; q++) { if (five[q] > hi) hi = five[q]; if (five[q] < lo) lo = five[q]; }
-      const double fl = ncr ? flush_at(p, mu, mv, cr, ncr, Ss[k]) : 0.0;
-      const double full = hi + BED_TOP + bias;
-      const double top = full * (1.0 - fl) + (lo - BED_SINK + bias) * fl;
-      Tt[k] = top;
-      Hl[k] = (full + RAIL_HIGH) * (1.0 - fl) + (rl + FLUSH_HIGH) * fl;
-      Hr[k] = (full + RAIL_HIGH) * (1.0 - fl) + (rr + FLUSH_HIGH) * fl;
-      Hk[k] = (full + RACK_HIGH) * (1.0 - fl) + (c + FLUSH_HIGH) * fl;
-      double tl = ground_at(&gr, u - qu * toeHalf, v - qv * toeHalf) - BED_FOOT;
-      double tr = ground_at(&gr, u + qu * toeHalf, v + qv * toeHalf) - BED_FOOT;
-      tl = tl > top - 0.01 ? top - 0.01 : tl < top - BED_DROP ? top - BED_DROP : tl;
-      tr = tr > top - 0.01 ? top - 0.01 : tr < top - BED_DROP ? top - BED_DROP : tr;
-      Tl[k] = tl; Tr[k] = tr;
-      Sf[k] = fl;
+      double top, fl = 0.0;
+      if (p->deck) {
+        top = p->h0 + (p->h1 - p->h0) * f - DECK_BELOW + BED_TOP + bias;
+        Hl[k] = Hr[k] = top + RAIL_HIGH;
+        Hk[k] = top + RACK_HIGH;
+        Tl[k] = Tr[k] = top - BED_TOP - BED_FOOT;
+      } else {
+        Under w;
+        under_at(&gr, g, u, v, qu, qv, &w);
+        fl = ncr ? flush_at(p, mu, mv, cr, ncr, Ss[k]) : 0.0;
+        const double full = w.hi + BED_TOP + bias;
+        top = full * (1.0 - fl) + (w.lo - BED_SINK + bias) * fl;
+        Hl[k] = (full + RAIL_HIGH) * (1.0 - fl) + (w.rl + FLUSH_HIGH) * fl;
+        Hr[k] = (full + RAIL_HIGH) * (1.0 - fl) + (w.rr + FLUSH_HIGH) * fl;
+        Hk[k] = (full + RACK_HIGH) * (1.0 - fl) + (w.c + FLUSH_HIGH) * fl;
+        double tl = ground_at(&gr, u - qu * toeHalf, v - qv * toeHalf) - BED_FOOT;
+        double tr = ground_at(&gr, u + qu * toeHalf, v + qv * toeHalf) - BED_FOOT;
+        tl = tl > top - 0.01 ? top - 0.01 : tl < top - BED_DROP ? top - BED_DROP : tl;
+        tr = tr > top - 0.01 ? top - 0.01 : tr < top - BED_DROP ? top - BED_DROP : tr;
+        Tl[k] = tl; Tr[k] = tr;
+      }
+      Tt[k] = top; Sf[k] = fl;
+      Wl[k] = Wr[k] = topHalf; Xl[k] = Xr[k] = toeHalf; El[k] = Er[k] = top;
+      /* A side with a track alongside it (see the top), away from level crossings: level to the line midway, at the
+       * higher top of the two there, and its lip under the other's. */
+      if (fl <= 0.0) {
+        const double x = u * mu, y = v * mv;
+        for (int side = -1; side <= 1; side += 2) {
+          u32 qi = 0;
+          double qf = 0;
+          const double d = beside(P, n, i, x, y, side, mu, mv, &qi, &qf);
+          if (!(d > 0)) continue;
+          const double theirs = full_top(&P[qi], &gr, qf, mu, mv), h = top > theirs ? top : theirs, mid = 0.5 * d;
+          if (side < 0) { Wl[k] = mid; El[k] = h; Xl[k] = mid + LIP; Tl[k] = h - LIP_DROP; }
+          else { Wr[k] = mid; Er[k] = h; Xr[k] = mid + LIP; Tr[k] = h - LIP_DROP; }
+        }
+      }
     }
 
-    /* Left out where the line between the kept ones on either side passes within TOL of it. */
+    /* Left out where the line between the kept ones on either side passes within TOL of it (its sides' reach within
+     * WIDE_TOL). */
     u32 last = 0;
     for (u32 k = 1; k + 1u < ns; k++) {
       if (keep[k]) { last = k; continue; }
@@ -499,12 +605,11 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
       int fits = Ss[j] - Ss[last] <= LONGEST;
       for (u32 q = last + 1u; fits && q < j; q++) {
         const double t = (Ss[q] - Ss[last]) / (Ss[j] - Ss[last]);
-        fits = m_abs(Tt[last] + (Tt[j] - Tt[last]) * t - Tt[q]) <= TOL &&
-               m_abs(Hl[last] + (Hl[j] - Hl[last]) * t - Hl[q]) <= TOL &&
-               m_abs(Hr[last] + (Hr[j] - Hr[last]) * t - Hr[q]) <= TOL &&
-               m_abs(Tl[last] + (Tl[j] - Tl[last]) * t - Tl[q]) <= TOL &&
-               m_abs(Tr[last] + (Tr[j] - Tr[last]) * t - Tr[q]) <= TOL &&
-               m_abs(Sf[last] + (Sf[j] - Sf[last]) * t - Sf[q]) <= 0.02;
+        fits = on_line(Tt, last, j, q, t, TOL) && on_line(Hl, last, j, q, t, TOL) && on_line(Hr, last, j, q, t, TOL) &&
+               on_line(Tl, last, j, q, t, TOL) && on_line(Tr, last, j, q, t, TOL) && on_line(Sf, last, j, q, t, 0.02) &&
+               on_line(El, last, j, q, t, TOL) && on_line(Er, last, j, q, t, TOL) &&
+               on_line(Wl, last, j, q, t, WIDE_TOL) && on_line(Wr, last, j, q, t, WIDE_TOL) &&
+               on_line(Xl, last, j, q, t, WIDE_TOL) && on_line(Xr, last, j, q, t, WIDE_TOL);
       }
       if (!fits) { keep[k] = 1; last = k; }
     }
@@ -523,10 +628,10 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
       const double along = p->a0 + (p->a1 - p->a0) * f;
       const u8 fb = (u8)(fl * 255.0 + 0.5);
       const u32 base = o.nv;
-      put(&o, &F, rx, ry, -toeHalf, Tl[k], along, g, TRACK_BED, fb, 0);
-      put(&o, &F, rx, ry, -topHalf, top, along, g, TRACK_BED, fb, 255);
-      put(&o, &F, rx, ry, topHalf, top, along, g, TRACK_BED, fb, 255);
-      put(&o, &F, rx, ry, toeHalf, Tr[k], along, g, TRACK_BED, fb, 0);
+      put(&o, &F, rx, ry, -Xl[k], Tl[k], along, g, TRACK_BED, fb, 0);
+      put(&o, &F, rx, ry, -Wl[k], El[k], along, g, TRACK_BED, fb, 255);
+      put(&o, &F, rx, ry, Wr[k], Er[k], along, g, TRACK_BED, fb, 255);
+      put(&o, &F, rx, ry, Xr[k], Tr[k], along, g, TRACK_BED, fb, 0);
       for (int side = -1; side <= 1; side += 2) {
         const double c = side * rail, head = side < 0 ? Hl[k] : Hr[k];
         put(&o, &F, rx, ry, c - RAIL_HEAD, top, along, g, TRACK_RAIL, fb, 0);

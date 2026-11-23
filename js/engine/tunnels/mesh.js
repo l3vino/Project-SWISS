@@ -168,7 +168,9 @@ function smoothed(points, half) {
  *                 (per end, 5.17u: null, or { len: metres out of the collar, half: metres from the bore's middle to
  *                 its walls, tops: Float32Array, its walls' tops over the floor, left and right, at as many places
  *                 evenly out to len, feet: the same of their feet (under the floor; CUT_FOOT under it by default,
- *                 5.17v), head: Float32Array(HEAD_N), its headwall's top over the floor across, wall to wall }) }
+ *                 5.17v), head: Float32Array(HEAD_N), its headwall's top over the floor across, wall to wall }),
+ *                 bedTop (metres a railway's ballast bed stands over the floor, as the open track's, 5.18c; 0 drawn on
+ *                 the floor) }
  * @param points   meshPoints' points
  * @param profile  the cross-section (sections.js points)
  * @param copy     (Uint8Array) => a copy that can be handed over
@@ -245,6 +247,7 @@ export function buildTunnelMesh(core, spec, points, profile, copy = (u8) => u8.s
     dv.setFloat32(136 + 4 * e, c ? c.half : 0, true);
     dv.setFloat32(144 + 4 * e, c ? c.tops.length / 2 : 0, true);
   }
+  dv.setFloat32(152, spec.bedTop ?? 0, true);
   const status = core.exports.tunnel_mesh(specOff, pointsOff, profileOff, resOff);
   core.sync();
   if (status !== 0) throw new Error(`tunnel mesh failed (${status})`);
