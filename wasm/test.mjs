@@ -1151,12 +1151,14 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const Qm = 32767;
   // A tile's shaped mesh through qm_ground (u, v, h, triangles), and the
   // triangle count qm_decode draws with the same pieces.
-  const shapeOf = (bytes, rect, pieces) => {
+  const shapeOf = (bytes, rect, pieces, profiles = null) => {
     core.reset();
     const src = core.write(bytes);
     const roads = pieces ? core.write(new Uint8Array(pieces.buffer, pieces.byteOffset, pieces.byteLength)) : 0;
+    const given = profiles ? core.write(new Uint8Array(profiles.buffer, profiles.byteOffset, profiles.byteLength)) : 0;
     const res = core.alloc(core.exports.qm_ground_size());
-    const status = core.exports.qm_ground(src, bytes.byteLength, rect.west, rect.south, rect.east, rect.north, roads, pieces ? pieces.length / PIECE_FLOATS : 0, res);
+    const status = core.exports.qm_ground(src, bytes.byteLength, rect.west, rect.south, rect.east, rect.north, roads, pieces ? pieces.length / PIECE_FLOATS : 0, res,
+      given, profiles ? profiles.length / 3 : 0);
     core.sync();
     const r = new DataView(core.buffer, res, 64);
     const n = r.getUint32(8, true), tc = r.getUint32(12, true), uvh = r.getUint32(16, true), io = r.getUint32(20, true), wide = r.getUint32(24, true);
@@ -1431,6 +1433,61 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (d.st !== 0 || !n || d.outside || d.crossings) problems.push(`deck track: status ${d.st}, ${n} sections, ${d.outside} indices outside, ${d.crossings} crossings`);
     if (!(worstTop < 0.002 && worstRail < 0.002 && worstToe < 0.002)) problems.push(`deck track: top ${worstTop.toFixed(4)}, rails ${worstRail.toFixed(4)}, toes ${worstToe.toFixed(4)} m off`);
   }
+  // (a8) A railway's profile from readings along it (5.18d: wasm/src/profile.c rail_profile): 400 m of readings every
+  // 2 m on a 3% grade with ±0.1 m of noise and one reading 4 m off (a wall): a few tens of points, within 0.12 m of the
+  // grade everywhere, the spike gone; on the Uetlibergbahn's 7.9% the same, its grade kept (no cap).
+  {
+    const profileOf = (zAt) => {
+      const n = 201, s = new Float64Array(n), z = new Float64Array(n);
+      for (let i = 0; i < n; i++) { s[i] = 2 * i; z[i] = zAt(s[i], i); }
+      core.reset();
+      const sOff = core.write(new Uint8Array(s.buffer)), zOff = core.write(new Uint8Array(z.buffer)), out = core.alloc(n * 8);
+      const count = core.exports.rail_profile(sOff, zOff, n, out);
+      core.sync();
+      return new Float32Array(core.buffer.slice(out, out + count * 8));
+    };
+    const at = (p, s) => {
+      for (let k = 0; k + 3 < p.length; k += 2) if (s <= p[k + 2]) return p[k + 1] + ((p[k + 3] - p[k + 1]) * (s - p[k])) / (p[k + 2] - p[k]);
+      return p[p.length - 1];
+    };
+    const worst = (p, line) => { let w = 0; for (let s = 0; s <= 400; s += 1) w = Math.max(w, Math.abs(at(p, s) - line(s))); return w; };
+    const noisy = profileOf((s, i) => 1000 + 0.03 * s + 0.1 * Math.sin(i * 2.3) + (i === 100 ? 4 : 0));
+    const steep = profileOf((s) => 1000 + 0.079 * s);
+    const wNoisy = worst(noisy, (s) => 1000 + 0.03 * s), wSteep = worst(steep, (s) => 1000 + 0.079 * s);
+    trackLine += `; a railway's profile from 201 readings: ${noisy.length / 2} points, within ${wNoisy.toFixed(3)} m of its 3% grade through noise and a 4 m spike` +
+      ` (at 7.9%: ${steep.length / 2} points, within ${wSteep.toFixed(3)} m)`;
+    if (!(noisy.length / 2 >= 2 && noisy.length / 2 <= 60 && wNoisy < 0.12 && steep.length / 2 <= 12 && wSteep < 0.02)) {
+      problems.push(`rail profile: ${noisy.length / 2} points within ${wNoisy.toFixed(3)} m; at 7.9% ${steep.length / 2} within ${wSteep.toFixed(3)} m`);
+    }
+  }
+  // (a9) A railway line with a given profile (5.18d: shape.c): along the road's line, its profile a metre over the
+  // hillside's own ground. The level width follows the profile to a centimetre all along the line through the tile,
+  // over its last 8 m at both edges too (there the edge rule fits to the profile, not to the ground on the edge, so a
+  // tile of any level next to it gives the edge the same height).
+  {
+    const rail = Float32Array.from(road);
+    rail[6] = 2.5; rail[7] = 0.04; rail[8] = 60;   // a railway's level width, grade and priority
+    const groundAt = (v) => 1000 + 0.3 * mLat * (v / Qm);
+    const vOf = (s) => road[1] + (road[3] - road[1]) * (s / road[5]);
+    const points = [];
+    for (let s = 0; s <= road[5] + 1e-6; s += 10) points.push(0, s, groundAt(vOf(s)) + 1.0);
+    const given = Float32Array.from(points);
+    const shaped = shapeOf(hillBytes.slice(), hrect, rail, given);
+    let worstIn = 0, worstEdge = 0, n = 0;
+    for (let k = 0; k <= 200; k++) {
+      const u = (k / 200) * Qm, f = (u - road[0]) / (road[2] - road[0]), v = road[1] + (road[3] - road[1]) * f;
+      const h = heightAt(shaped, u, v);
+      if (!Number.isFinite(h)) continue;
+      const off = Math.abs(h - (groundAt(v) + 1.0)), edge = Math.min(u, Qm - u) * (mLon / Qm) < 8;
+      if (edge) worstEdge = Math.max(worstEdge, off); else worstIn = Math.max(worstIn, off);
+      n++;
+    }
+    trackLine += `; a railway with a given profile 1 m over the ground: its middle within ${(worstIn * 100).toFixed(1)} cm of it along the tile ` +
+      `(${n} points), ${(worstEdge * 100).toFixed(1)} cm over the last 8 m at the edges`;
+    if (shaped.status !== 0 || !(n > 150 && worstIn < 0.01 && worstEdge < 0.01)) {
+      problems.push(`given profile: status ${shaped.status}, ${n} points, ${worstIn.toFixed(3)} m off inside, ${worstEdge.toFixed(3)} m at the edges`);
+    }
+  }
 
   // (b) Göschenen: the real tile, the real roads.
   const vt = decodeVectorTile(core, new Uint8Array(fs.readFileSync(new URL('../tools/fixtures/vt-goeschenen-14-8582-5785.pbf', import.meta.url))), { z: 14, x: 8582, y: 5785, schema: TRANSPORT });
@@ -1466,6 +1523,23 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (!(alone.most > 1 && owned.most < 0.01 && owned.length < alone.length)) {
       problems.push(`a road tile's pieces reach ${alone.most.toFixed(2)} m past its square alone, ${owned.most.toFixed(3)} m with its neighbours (${alone.length.toFixed(0)} → ${owned.length.toFixed(0)} m)`);
     }
+    // (b1) Its railway lines for their profiles (5.18d: rails.js): each a stretch or more on the ground, rising along
+    // it; one given a profile (two stretches, a break between): its points come out with the pieces, once, under the
+    // pieces' own line number.
+    const { railLines } = await import('../js/engine/vector/rails.js');
+    const { PROFILE_FLOATS } = await import('../js/engine/vector/pieces.js');
+    const railKinds = schemaTables(TRANSPORT).kinds.map((k) => (k.shape ? { shape: true, half: k.width / 2, bench: k.bench, grade: k.grade, priority: k.priority, gauge: (k.gauge ?? 0) / 2 } : null));
+    const rl = railLines({ block: block.block, z: 14, x: 8582, y: 5785 }, railKinds);
+    let stretches = 0, falling = 0;
+    for (const { stretches: st } of rl) for (const p of st) { stretches++; for (let i = 5; i < p.length; i += 3) if (p[i] < p[i - 3]) falling++; }
+    const prof = new Float32Array([0, 1100, 50, 1101, 60, NaN, 70, 1102, 200, 1103]);
+    const acc = { data: new Float32Array(8 * PROFILE_FLOATS), count: 0 };
+    if (rl.length) piecesFor([{ ...block, profiles: new Map([[rl[0].line, prof]]), seen: undefined, stamp: undefined }], wide, railKinds, halfWidths, undefined, null, acc);
+    const got = acc.data.slice(0, acc.count * PROFILE_FLOATS);
+    const same = got.length === 15 && [...prof].every((v, k) => (Number.isNaN(v) ? Number.isNaN(got[(k >> 1) * 3 + 1 + (k & 1)]) : got[(k >> 1) * 3 + 1 + (k & 1)] === v))
+      && [0, 3, 6, 9, 12].every((k) => got[k] === rl[0].line);
+    trackLine += `; its railway lines ${rl.length} (${stretches} stretches on the ground), a given profile's ${acc.count} points with the pieces`;
+    if (!(rl.length >= 5 && !falling && same)) problems.push(`railway lines: ${rl.length}, ${falling} falling back along a stretch, the profile's points ${[...got].map((v) => v.toFixed(0))}`);
   }
   const out = piecesFor([block], grect, kinds, halfWidths);
   const pieces = out.data.slice(0, out.count * PIECE_FLOATS);
@@ -2351,6 +2425,40 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (boxStart === undefined || boxStart > 0.05) problems.push(trimLine);
   console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
+}
+
+/* ---- 17a. a thread's own jobs with two clients (core/local-scheduler.js, 5.18d: the tunnels and the railways'
+ * profiles on one thread): they take turns, at most `most` out at once, and each calls off only its own jobs. */
+{
+  const { LocalScheduler } = await import('../js/core/local-scheduler.js');
+  const waits = [];
+  const sched = new LocalScheduler({ wait: (n, signal) => new Promise((done, fail) => {
+    waits.push(done);
+    signal.addEventListener('abort', () => fail(signal.reason));
+  }) }, { most: 4 });
+  const started = { a: 0, b: 0 }, ended = { a: 0, b: 0, aborted: 0 };
+  const clientFor = (name) => {
+    const c = sched.client(name, { pick: () => {
+      if (started[name] >= 3) return false;
+      started[name]++;
+      c.run('wait', 0).then(() => { ended[name]++; }, () => { ended.aborted++; });
+      return true;
+    } });
+    return c;
+  };
+  const a = clientFor('a'), b = clientFor('b');
+  sched.dispatch();
+  const firstTurns = `${started.a}+${started.b}`;   // 4 out at most, by turns: 2 + 2
+  a.cancelAll();
+  await new Promise((done) => setTimeout(done, 0));
+  for (const done of waits.splice(0)) done();
+  await new Promise((done) => setTimeout(done, 10));
+  for (const done of waits.splice(0)) done();
+  await new Promise((done) => setTimeout(done, 10));
+  const ok = firstTurns === '2+2' && started.a === 3 && started.b === 3 && ended.aborted === 2 && ended.b === 3 && ended.a === 1;
+  console.log(`a thread's jobs for two clients: first ${firstTurns} out by turns (4 at most), all ${started.a}+${started.b} started, ` +
+    `the first's ${ended.aborted} called off alone, the second's ${ended.b} done — ${ok ? 'as built' : 'WRONG'}`);
+  if (!ok) process.exitCode = 1;
 }
 
 /* ---- 17b. every module links (tools/linkcheck.mjs, 5.19a): a name imported that another module no longer exports

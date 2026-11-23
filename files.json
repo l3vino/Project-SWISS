@@ -1,5 +1,5 @@
 {
- "build": "5.18c",
+ "build": "5.18d",
  "files": [
   "css/ui.css",
   "js/adapters/adapter.js",
@@ -79,6 +79,7 @@
   "js/engine/shaders/vector.wgsl",
   "js/engine/shaders.js",
   "js/engine/terrain/format.js",
+  "js/engine/terrain/ground-points.js",
   "js/engine/terrain/ground.js",
   "js/engine/terrain/source.js",
   "js/engine/terrain/terrain.js",
@@ -91,6 +92,7 @@
   "js/engine/tunnels/mesh.js",
   "js/engine/tunnels/placed.js",
   "js/engine/tunnels/portal-checks.js",
+  "js/engine/tunnels/rail-profiles.js",
   "js/engine/tunnels/runs.js",
   "js/engine/tunnels/sections.js",
   "js/engine/tunnels/trace.js",
@@ -101,6 +103,7 @@
   "js/engine/vector/pieces.js",
   "js/engine/vector/pool.js",
   "js/engine/vector/portals.js",
+  "js/engine/vector/rails.js",
   "js/engine/vector/source.js",
   "js/engine/vector/tiles.js",
   "js/engine/view.js",

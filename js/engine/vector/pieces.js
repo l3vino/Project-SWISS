@@ -30,7 +30,9 @@
  * buffer); where that tile is cut into the same terrain tile too, those
  * parts are its, not this block's (the block's `owners`, 5.18c: they came
  * twice, a doubled and flickering track and road in a band ~20 m wide along
- * every road tile's edge).
+ * every road tile's edge). And a railway line cut here brings its given
+ * profile (the block's `profiles`: engine/tunnels/rail-profiles.js, 5.18d),
+ * which the terrain takes its height from (shape.c), the same in every tile.
  */
 
 import { BLOCK, segmentArcs } from '../../formats/vector-tile.js';
@@ -43,6 +45,9 @@ export const PIECE_FLOATS = 10;
  * top at each end where it lies on a bridge's deck (5.18c; NaN on the ground). */
 export const TRACK_FLOATS = 11;
 export const TRACK_RACK = 1;
+/* A point of a railway line's given profile (wasm/src/shape.c ProfilePoint, 5.18d): its line (the pieces'), the metres
+ * along it, its height there (NaN: a break between two stretches on the ground). */
+export const PROFILE_FLOATS = 3;
 const Q = 32767;
 /* Metres from a terrain tile a pin still reaches into it (shape.c eases one
  * over at most this). */
@@ -62,6 +67,7 @@ const latOf = (my) => (Math.atan(Math.sinh(Math.PI * (1 - 2 * my))) * 180) / Mat
 const place = { b: null, E: 1, n: 1, west: 0, south: 0, du: 0, dv: 0, ax: 0, ay: 0, sx: 0, sy: 0 };
 const ownScratch = [];
 const cutScratch = new Float64Array(6);
+const profiled = new Set();   // the block's railway lines cut (their given profiles go with the pieces)
 
 /**
  * Pieces over `rect` from the given blocks, appended to `out` (a growable
@@ -72,11 +78,15 @@ const cutScratch = new Float64Array(6);
  * @param widths  half-widths by width class (the segments' exact-width code), metres
  * @param tracks  where the railways' track pieces go (TRACK_FLOATS each, the same growable kind as `out`), or null
  *                for none: one a segment on the ground of a kind with a gauge, one a stretch of a known deck
+ * @param profiles  where the given profiles of the railway lines cut go (PROFILE_FLOATS a point, the same growable
+ *                kind; the block's `profiles`: rail-profiles.js, 5.18d), or null for none
  */
-export function piecesFor(blocks, rect, kinds, widths, out = { data: new Float32Array(1024 * PIECE_FLOATS), count: 0 }, tracks = null) {
+export function piecesFor(blocks, rect, kinds, widths, out = { data: new Float32Array(1024 * PIECE_FLOATS), count: 0 }, tracks = null, profiles = null) {
   const du = Q / (rect.east - rect.west), dv = Q / (rect.north - rect.south);
   const c = place;
   for (const b of blocks) {
+    const given = profiles && b.profiles ? b.profiles : null;
+    profiled.clear();
     const bytes = b.block;
     const u32 = new Uint32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >>> 2);
     const f32 = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >>> 2);
@@ -132,8 +142,10 @@ export function piecesFor(blocks, rect, kinds, widths, out = { data: new Float32
           for (let q = 0; q < own.length; q += 2) {
             const g0 = Math.max(f0, own[q]), g1 = Math.min(f1, own[q + 1]);
             if (g1 - g0 <= 1e-6) continue;
-            // The railway's track over it (5.18b: track.c builds it on the ground cut here), the whole stretch at once.
+            // The railway's track over it (5.18b: track.c builds it on the ground cut here), the whole stretch at once,
+            // and its line's given profile (5.18d) with the pieces.
             if (tracks && kind.gauge > 0) pushTrack(tracks, c, g0, g1, a0, span, kind, id, NaN, NaN);
+            if (given && kind.gauge > 0 && given.has(line)) profiled.add(line);
             // In front of a tunnel's portal, stretches at the widths its level cut takes (portals.js); else one.
             const parts = b.widen && span > 1e-6 ? stretchesOf(b.widen, line, a0 + span * g0, a0 + span * g1, half, stretches) : null;
             for (let r = 0, m = parts ? parts.length : 3; r < m; r += 3) {
@@ -145,6 +157,8 @@ export function piecesFor(blocks, rect, kinds, widths, out = { data: new Float32
         }
       }
     }
+    // The given profiles of the railway lines cut here (5.18d), each once.
+    for (const line of profiled) pushProfile(profiles, b.id * 65536 + line, given.get(line));
     const cosLat = Math.cos(((rect.south + rect.north) / 2) * Math.PI / 180);
     const mu = (PIN_REACH * du) / (111320 * cosLat), mv = (PIN_REACH * dv) / 111132;
     // The block's tunnel portals' aprons and open cuttings near the tile (portals.js: the landing in front of a portal,
@@ -245,6 +259,17 @@ function pushTrack(tracks, c, f0, f1, a0, span, kind, id, h0, h1) {
   t[at + 9] = h0;
   t[at + 10] = h1;
   tracks.count++;
+}
+
+/* A railway line's given profile ([s, z, …]) as points of line `id`. */
+function pushProfile(profiles, id, p) {
+  for (let k = 0; k + 1 < p.length; k += 2) {
+    const d = room(profiles, PROFILE_FLOATS), at = profiles.count * PROFILE_FLOATS;
+    d[at] = id;
+    d[at + 1] = p[k];
+    d[at + 2] = p[k + 1];
+    profiles.count++;
+  }
 }
 
 /* A railway's track over a bridge's deck: a piece between each two points of the deck's profile along the line

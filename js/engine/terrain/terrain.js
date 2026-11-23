@@ -73,7 +73,7 @@ import { WGS84_A } from '../../core/math.js';
 import { PHYSICS, VIEW, PRELOAD, hostOf } from '../../core/scheduler.js';
 import { isAbort } from '../../core/rpc.js';
 import { ROADS_NOT_READY } from '../vector/tiles.js';
-import { PIECE_FLOATS } from '../vector/pieces.js';
+import { PIECE_FLOATS, PROFILE_FLOATS } from '../vector/pieces.js';
 
 export const UNLOADED = 0, LOADING = 1, READY = 2, MISSING = 3;
 
@@ -170,6 +170,21 @@ const ACCEPT_MS = 0.5;
  * deck's finer tiles arriving move it by centimetres). */
 const PIN_ALONG = 0.5, PIN_HEIGHT = 0.1, PIN_GRADE = 0.02;
 
+/* Whether the railways' given profiles a tile was cut with (pieces.js PROFILE_FLOATS a point, or null for none) still
+ * stand for `now` (5.18d): the same points, each height within PROFILE_HEIGHT metres (NaN, a break, as NaN). */
+const PROFILE_HEIGHT = 0.02;
+function sameProfiles(was, now) {
+  if (!was || !now) return !was === !now;
+  if (was.length !== now.length) return false;
+  for (let i = 0; i < was.length; i++) {
+    const a = was[i], b = now[i];
+    if (a === b || (a !== a && b !== b)) continue;
+    if (i % PROFILE_FLOATS === 2 && Math.abs(a - b) < PROFILE_HEIGHT) continue;
+    return false;
+  }
+  return true;
+}
+
 /* Whether pieces a tile was cut with still stand for `now` (both from
  * pieces.js, or null for none): the same pieces in the same order, their
  * half-widths (field 6) apart by less than WIDTH_RECUT, and the pins (field
@@ -199,6 +214,7 @@ function transferOf(roads) {
   const list = [];
   if (roads.pieces) list.push(roads.pieces.buffer);
   if (roads.tracks) list.push(roads.tracks.buffer);
+  if (roads.profiles) list.push(roads.profiles.buffer);
   return list.length ? list : undefined;
 }
 
@@ -270,6 +286,7 @@ class TerrainTile {
     this.roadsWaitUntil = 0;      // waiting for its road tiles until then
     this.reshape = false;         // queued to be cut again
     this.cutPieces = null;        // the road pieces its mesh was cut with (a copy), for physics and for new widths
+    this.cutProfiles = null;      // and the railways' given profiles (5.18d, a copy), for physics and for new ones
     this.shaped = null;           // what the cutting did (codec.js shapeStats), for the probe
     // The railway's track built over it (5.18b: wasm/src/track.c), drawn by the terrain pass near the camera.
     this.trackVbuf = null;
@@ -757,6 +774,8 @@ export class Terrain {
     if (!roads || !sameCut(t.cutPieces, roads.pieces)) return false;
     // The railway's track switched on or off where there is one (5.18b): decoded again.
     if (Boolean(roads.tracks) !== t.tracksAsked) return false;
+    // A railway's given profile came or changed (5.18d): cut again.
+    if (!sameProfiles(t.cutProfiles, roads.profiles)) return false;
     t.roadsSig = roads.sig;
     this.shapeTotals.kept++;
     return true;
@@ -836,6 +855,11 @@ export class Terrain {
     if (!this.roads || !this.shaping) return undefined;
     if (this.roads.roadsSig(t.rect) !== t.roadsSig && !this.#accept(t)) return undefined;
     return t.cutPieces ? t.cutPieces.slice() : null;
+  }
+
+  /** The railways' given profiles tile `t`'s mesh was cut with (5.18d), made again for its ground index: null for none. */
+  shapedProfiles(t) {
+    return t.cutProfiles ? t.cutProfiles.slice() : null;
   }
 
   /* A pruned branch's tiles are no longer in the tree; loading one would
@@ -920,12 +944,13 @@ export class Terrain {
         const roads = this.#roadsNow(t);
         // What it is cut with, kept (the decode thread is handed the pieces).
         const cut = roads?.pieces ? roads.pieces.slice() : null;
+        const cutProfiles = roads?.profiles ? roads.profiles.slice() : null;
         const tracks = roads?.tracks ?? null;
         let result;
         try {
           result = await this.client.run('terrain-tile', {
             url, rect: t.rect, skirt: skirtFor(t.z), accept: source.accept, ground: Boolean(this.wantsGround?.(t)),
-            roads: roads?.pieces ?? null, tracks,
+            roads: roads?.pieces ?? null, tracks, profiles: roads?.profiles ?? null,
           }, { item: t, cls, cost: 4, host: hostFor(source), timeout: 20000, transfer: transferOf(roads) });
         } catch (err) {
           // Called off: back in line whenever it is wanted again.
@@ -951,6 +976,7 @@ export class Terrain {
         t.attempts = 0;
         result.roadsSig = roads ? roads.sig : ROADS_NOT_READY;
         result.cutPieces = cut;
+        result.cutProfiles = cutProfiles;
         result.tracksAsked = Boolean(tracks);
         // To the GPU during a frame's upload slice, not the moment it lands.
         if (this.uploads) await this.uploads.schedule(() => this.#upload(t, result));
@@ -998,10 +1024,11 @@ export class Terrain {
     this.inFlight++;
     try {
       const source = t.source, url = t.url, pieces = roads?.pieces ?? null, tracks = roads?.tracks ?? null;
-      const cut = pieces ? pieces.slice() : null;
+      const profiles = roads?.profiles ?? null;
+      const cut = pieces ? pieces.slice() : null, cutProfiles = profiles ? profiles.slice() : null;
       const result = await this.client.run('terrain-tile', {
         url, rect: t.rect, skirt: skirtFor(t.z), accept: source.accept, ground: Boolean(this.wantsGround?.(t)),
-        roads: pieces, tracks,
+        roads: pieces, tracks, profiles,
       }, { item: t, cls: VIEW, cost: 4, host: hostFor(source), timeout: 20000, transfer: transferOf(roads) });
       if (result.missing || t.state !== READY || t.url !== url) {
         if (!result.missing) this.#recycle(result);
@@ -1009,6 +1036,7 @@ export class Terrain {
       }
       result.roadsSig = sig;
       result.cutPieces = cut;
+      result.cutProfiles = cutProfiles;
       result.tracksAsked = Boolean(tracks);
       const swap = () => {
         if (t.state !== READY) { this.#recycle(result); return; }
@@ -1086,7 +1114,9 @@ export class Terrain {
     t.roadsSig = r.roadsSig ?? ROADS_NOT_READY;
     t.roadsWaitUntil = 0;
     this.cutBytes += (r.cutPieces?.byteLength ?? 0) - (t.cutPieces?.byteLength ?? 0);
+    this.cutBytes += (r.cutProfiles?.byteLength ?? 0) - (t.cutProfiles?.byteLength ?? 0);
     t.cutPieces = r.cutPieces ?? null;
+    t.cutProfiles = r.cutProfiles ?? null;
     t.shaped = r.shape ?? null;
     if (r.shape) {
       const s = this.shapeTotals;
@@ -1131,8 +1161,9 @@ export class Terrain {
   #release(t) {
     this.shapeable.delete(t);
     t.roadsSig = ROADS_NOT_READY;
-    this.cutBytes -= t.cutPieces?.byteLength ?? 0;
+    this.cutBytes -= (t.cutPieces?.byteLength ?? 0) + (t.cutProfiles?.byteLength ?? 0);
     t.cutPieces = null;
+    t.cutProfiles = null;
     t.tracksAsked = false;
     this.lru.remove(t);
     t.vbuf?.destroy();

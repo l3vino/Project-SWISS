@@ -10,11 +10,13 @@
  * From the render thread: 'init' (the compiled core), 'enabled', 'camera' (where it is, when it moves), 'roads' (the
  * road service's templates and schema), 'runs' (the detail tiles' tunnel runs as they come and go), 'decks' (the
  * bridges' decks as they come and go: portal floors on their own decks), 'track' (whether the open track is built in
- * 3D: a railway tube's bed as high as its, 5.18c), 'checks' (what its checks of the portals against the ground as
+ * 3D: a railway tube's bed as high as its, 5.18c), 'rails' (the detail tiles' railway lines as they come and go: their
+ * profiles, engine/tunnels/rail-profiles.js, 5.18d), 'checks' (what its checks of the portals against the ground as
  * drawn found: portal-checks.js), 'report' (for the probe).
  * To it: 'mesh' (a request: a mesh's vertices and indices, transferred, its fields and the copy of its tube as placed;
  * answered once its buffers are on the GPU), 'mesh-unused', 'lists' (after every change: the meshes drawn in order,
- * the portals, the bores' meetings, the portal floors for the road tiles).
+ * the portals, the bores' meetings, the portal floors for the road tiles), 'profiles' (a road tile's railway lines'
+ * height profiles, transferred: vector/tiles.js setProfiles).
  */
 
 import { Endpoint } from '../core/rpc.js';
@@ -25,6 +27,7 @@ import { TerrainSource } from '../engine/terrain/source.js';
 import { schemaKinds } from '../formats/vector-tile.js';
 import { Decks } from '../engine/features/decks.js';
 import { TunnelSet, MESH_FIELDS } from '../engine/tunnels/tunnels.js';
+import { RailProfiles } from '../engine/tunnels/rail-profiles.js';
 import { tunnelJobs } from './jobs/tunnels.js';
 import { groundJob } from './jobs/ground.js';
 import { BUILD } from '../build.js';
@@ -34,9 +37,10 @@ const TICK_MS = 33;
 
 const rpc = new Endpoint(self, 'tunnels');
 const ctx = { core: null };
-let set = null, scheduler = null, ticking = 0;
+let set = null, rails = null, scheduler = null, ticking = 0;
 let listsDue = null;     // the latest lists, sent at the end of the turn (one message for many changes)
 let trackOn = true;      // the open track in 3D (the setting; kept for a set made after it came)
+const railsEarly = [];   // road tiles' railway lines sent before the thread was ready
 const camera = { lon: 0, lat: 0 };
 
 /* The road tiles as far as the tunnels go (TunnelSet's `vector`), as the render thread tells them. */
@@ -75,15 +79,19 @@ rpc.on('init', async ({ wasmModule }) => {
   scheduler = new LocalScheduler({ ...tunnelJobs(ctx), 'terrain-ground': (payload, signal) => groundJob(core, payload, signal) });
   set = new TunnelSet({ scheduler, terrain: { sourceList: sources }, vector: roads, sink });
   set.setTrack(trackOn);
+  // The railways' profiles (5.18d), on the same ground as the tunnels' portals.
+  rails = new RailProfiles({ scheduler, ground: set.ground, core, send: (key, lines, transfer) => rpc.send('profiles', { key, lines }, transfer) });
+  for (const { added, removed } of railsEarly.splice(0)) rails.apply(added, removed);
   ticking = setInterval(tick, TICK_MS);
   return { build: BUILD, name: self.name, sources: sources.map((s) => s.describe()) };
 });
 
 function tick() {
-  if (set?.enabled) {
-    set.update(camera);
-    scheduler.dispatch();
-  }
+  if (!scheduler) return;
+  if (set?.enabled) set.update(camera);
+  // (The railways' profiles whether the tunnels are on or not: the terrain is cut along them either way.)
+  rails?.tick(camera);
+  scheduler.dispatch();
   // (A mesh in them has its buffers on the render thread already: it was answered before it was set.)
   if (listsDue) { rpc.send('lists', listsDue); listsDue = null; }
 }
@@ -91,6 +99,8 @@ function tick() {
 rpc.on('enabled', ({ on }) => set?.setEnabled(on));
 
 rpc.on('track', ({ on }) => { trackOn = on; set?.setTrack(on); });
+
+rpc.on('rails', ({ added, removed }) => { if (rails) rails.apply(added, removed); else railsEarly.push({ added, removed }); });
 
 rpc.on('camera', ({ lon, lat }) => { camera.lon = lon; camera.lat = lat; });
 
@@ -115,6 +125,6 @@ rpc.on('decks', ({ added, removed, on }) => {
 
 rpc.on('checks', ({ corrections }) => set?.applyChecks(corrections));
 
-rpc.on('report', () => (set ? { ...set.report(), jobs: { ...scheduler.stats, active: scheduler.active } } : null));
+rpc.on('report', () => (set ? { ...set.report(), rails: rails ? { ...rails.stats } : null, jobs: { ...scheduler.stats, active: scheduler.active } } : null));
 
 rpc.announce();

@@ -4,7 +4,8 @@
  * asked for its next job whenever one may start), for a model that lives on a thread of its own and has the C core
  * there: workers/tunnels.js runs the tunnels' jobs where they are asked for, nothing copied to another thread and
  * back. A job waiting on the network does not hold the thread, so up to `most` are out at once, `perHost` to any one
- * host; one that computes runs to its end before the next starts (the thread is otherwise idle).
+ * host; one that computes runs to its end before the next starts (the thread is otherwise idle). Several clients take
+ * turns (since 5.18d: the tunnels and the railways' profiles), each calling off only its own jobs.
  */
 
 import { VIEW } from './scheduler.js';
@@ -21,19 +22,21 @@ export class LocalScheduler {
     this.active = 0;
     this.hosts = new Map();          // host → jobs out to it
     this.controllers = new Set();    // one per job out, to call it off
-    this.picker = null;
+    this.pickers = [];               // each client's pick, in the order they came
+    this.turn = 0;                   // whose turn it is to start a job
     this.dispatching = false;
     this.stats = { started: 0, failed: 0, cancelled: 0 };
   }
 
-  /** The one client (core/scheduler.js Client's interface); `pick(cls)` starts its next job through `run`. */
+  /** A client (core/scheduler.js Client's interface); `pick(cls)` starts its next job through `run`. */
   client(name, { pick }) {
-    this.picker = pick;
+    this.pickers.push(pick);
+    const mine = new Set();          // its jobs out
     return {
       name,
       canRun: (host) => this.canRun(host),
-      run: (type, payload, options) => this.run(type, payload, options),
-      cancelAll: () => this.cancelAll(),
+      run: (type, payload, options) => this.run(type, payload, options, mine),
+      cancelAll: () => { for (const c of mine) c.abort(abortError()); },
       recycle: () => {},
     };
   }
@@ -42,26 +45,30 @@ export class LocalScheduler {
     return this.active < this.most && (!host || (this.hosts.get(host) ?? 0) < this.perHost);
   }
 
-  /** Starts jobs while the client has one that can start. */
+  /** Starts jobs while a client has one that can start, the clients taking turns. */
   dispatch() {
-    if (this.dispatching || !this.picker) return;
+    if (this.dispatching || !this.pickers.length) return;
     this.dispatching = true;
     try {
-      while (this.active < this.most && this.picker(VIEW)) { /* each pick started one */ }
+      for (let idle = 0; this.active < this.most && idle < this.pickers.length;) {
+        const pick = this.pickers[this.turn++ % this.pickers.length];
+        if (pick(VIEW)) idle = 0; else idle++;
+      }
     } finally {
       this.dispatching = false;
     }
   }
 
   /**
-   * Runs a job here; `host` counts it against that host, `timeout` (ms) calls it off (a retryable error).
-   * (core/scheduler.js's `cls`, `cost` and `transfer` mean nothing on one thread.)
+   * Runs a job here; `host` counts it against that host, `timeout` (ms) calls it off (a retryable error); `mine`: the
+   * asking client's jobs out. (core/scheduler.js's `cls`, `cost` and `transfer` mean nothing on one thread.)
    */
-  async run(type, payload, { host = '', timeout = 0 } = {}) {
+  async run(type, payload, { host = '', timeout = 0 } = {}, mine = null) {
     const job = this.jobs[type];
     if (!job) throw new Error(`no job '${type}' on this thread`);
     const controller = new AbortController();
     this.controllers.add(controller);
+    mine?.add(controller);
     this.active++;
     if (host) this.hosts.set(host, (this.hosts.get(host) ?? 0) + 1);
     this.stats.started++;
@@ -77,6 +84,7 @@ export class LocalScheduler {
     } finally {
       clearTimeout(timer);
       this.controllers.delete(controller);
+      mine?.delete(controller);
       this.active--;
       if (host) this.hosts.set(host, this.hosts.get(host) - 1);
       // A slot is free: the next job (after the caller has seen this one's end).
@@ -84,7 +92,7 @@ export class LocalScheduler {
     }
   }
 
-  /** Calls off every job out (the layer switched off). */
+  /** Calls off every job out, every client's. */
   cancelAll() {
     for (const c of this.controllers) c.abort(abortError());
   }

@@ -371,9 +371,12 @@ export class Ground {
     // The pieces its mesh was cut with now: a tile cut again gets new ones
     // (new exact widths too small to matter keep the old: terrain.js #accept).
     const key = t.key, cut = t.cutPieces;
+    // And the railways' given profiles it was cut with (5.18d), so physics stands on the same ground.
+    const profiles = roads ? this.terrain.shapedProfiles(t) : null;
+    const transfer = [roads?.buffer, profiles?.buffer].filter(Boolean);
     try {
-      const data = await this.client.run('terrain-ground', { url: t.url, rect: t.rect, roads, accept: t.source?.accept },
-        { item: t, cls: PHYSICS, cost: 2, host: hostOf(t.url), timeout: 20000, transfer: roads ? [roads.buffer] : undefined });
+      const data = await this.client.run('terrain-ground', { url: t.url, rect: t.rect, roads, profiles, accept: t.source?.accept },
+        { item: t, cls: PHYSICS, cost: 2, host: hostOf(t.url), timeout: 20000, transfer: transfer.length ? transfer : undefined });
       // Gone, or cut again meanwhile (whose decode brought its own index).
       if (data.missing || t.state !== READY || t.cutPieces !== cut || this.entries.has(key)) return;
       this.adopt(t, data);

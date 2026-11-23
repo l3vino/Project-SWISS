@@ -29,7 +29,8 @@ done
   -Wl,--initial-memory=1048576 \
   -Wl,--lto-O3 \
   -o "$OUT" \
-  src/core.c src/mathf.c src/qm.c src/ground.c src/mesh.c src/solid.c src/bc.c src/mvt.c src/shape.c src/tunnel.c src/track.c
+  src/core.c src/mathf.c src/qm.c src/ground.c src/mesh.c src/solid.c src/bc.c src/mvt.c src/shape.c src/tunnel.c src/track.c \
+  src/profile.c
 
 if command -v wasm-opt >/dev/null 2>&1; then
   wasm-opt -O3 --enable-simd --enable-bulk-memory --strip-debug --strip-producers \

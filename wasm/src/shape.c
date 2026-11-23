@@ -87,6 +87,17 @@
  * round on into the hill over the tube (it laid the ground over a tube's
  * first metres flat at the road's height). Side ±3 pins the same way
  * without that: an open cutting's points between its ends.
+ * Given profiles (Stage 5.18d): each tile cut a line's height from its own
+ * mesh, and tiles of different levels of detail disagree by up to ~1.7 m,
+ * so a railway's track stepped where they met. A railway line now comes
+ * with its profile, made once from the terrain's finest level along it
+ * (js/engine/tunnels/rail-profiles.js, wasm/src/profile.c) and the same for
+ * every tile it crosses: the line takes its height from that, not from the
+ * mesh (not smoothed again, not anchored to other lines; pins still apply,
+ * the same in every tile), a piece of it is left as it is only where the
+ * ground is level across and within GIVEN_TOL of it, and on the tile's
+ * edges its height is fitted to it rather than to the ground on the edge,
+ * so both tiles give the edge one height, whatever their levels.
  *
  * Every vertex on a face is marked (m->face: cut or fill, and how much), so
  * the shader colours faces from the ground beside them rather than from the
@@ -134,6 +145,8 @@
 #define PIN_RAMP_MOST 40.0        /* but over this at most */
 #define PIN_MOST 5.0              /* metres: a deck this far off the road's own height does not meet it */
 #define PIN_LOOK 15.0             /* metres on a deck's ground side where the road's own height is read for that */
+#define GIVEN_REACH 1.0           /* metres past a given profile's ends it still answers for (Stage 5.18d) */
+#define GIVEN_TOL 0.05            /* metres a piece's ground may stray from its given height and be left as it is */
 #define PORTAL_HOLD 3.0           /* metres out of a tunnel's portal its pin holds the line, against a junction's height */
 #define END_SHARP 0.3             /* metres beyond a square end the ground is its own again (a line there) */
 #define SPREAD 6.0                /* metres: a face is made steeper (up to FACE_MOST) rather than reach out further than this */
@@ -630,6 +643,7 @@ typedef struct {
   u32 first, count;         /* its samples in the profile arrays */
   float priority, grade;
   u32 done;
+  u32 given;                /* its heights come from its given profile (Stage 5.18d): not smoothed, not anchored */
 } LineProfile;
 
 /* A piece, ready to measure against: in metres from its start. */
@@ -649,6 +663,7 @@ typedef struct {
   double fz[4], fg[4];      /* its height there, z = fz + fg * (metres along it from its start), fitted to the ground on the edge, */
   double fa[4], fb[4];      /* over this stretch along it (where the level width lies on the edge) */
   u32 k0, k1;               /* its line's profile samples that cover it */
+  u32 gFirst, gCount;       /* its line's given profile points (Stage 5.18d; gCount 0: none) */
   u32 sq0, sq1;             /* its start, its end square (Stage 5.17f: at a tunnel's portal pin, side ±2, on its line) */
   u32 cuts;                 /* bits: its run's square start, its square end near enough that its width or faces would
                              * reach past them; nothing beyond such an end (the plane across it) is in them */
@@ -691,6 +706,29 @@ INLINE double piece_s(const Prep *P, double along) {
   return s < P->in0 ? P->in0 : s > P->in1 ? P->in1 : s;
 }
 
+/* A line's given height at distance s along it (Stage 5.18d, see the top), from its points either side, into *z; 0
+ * where it has none there: more than GIVEN_REACH before its first point or past its last, or beside a break. */
+static int given_at(const ProfilePoint *g, u32 first, u32 count, double s, double *z) {
+  if (!count) return 0;
+  const ProfilePoint *p = g + first;
+  const u32 last = count - 1u;
+  if (s < p[0].s - GIVEN_REACH || s > p[last].s + GIVEN_REACH) return 0;
+  u32 lo = 0, hi = last;
+  if (s <= p[0].s) hi = 0;
+  else if (s >= p[last].s) lo = last;
+  else while (hi - lo > 1u) { u32 mid = (lo + hi) >> 1; if (p[mid].s <= s) lo = mid; else hi = mid; }
+  const double za = p[lo].z, zb = p[hi].z;
+  if (za != za || zb != zb) return 0;
+  const double f = p[hi].s > p[lo].s ? (s - p[lo].s) / (p[hi].s - p[lo].s) : 0;
+  *z = za + (zb - za) * f;
+  return 1;
+}
+
+/* A piece's given height `along` metres into it (not kept to the tile: its edges are fitted before that is known). */
+INLINE int given_along(const Prep *P, const ProfilePoint *g, double along, double *z) {
+  return P->gCount && given_at(g, P->gFirst, P->gCount, P->s0 + (P->s1 - P->s0) * (P->len > 0 ? along / P->len : 0), z);
+}
+
 /* Where a point is against a piece: distance across (metres, signed: left
  * of its direction positive) and along (metres from its start, clamped). */
 INLINE void measure(const Prep *P, double mu, double mv, double x, double y, double *across, double *along) {
@@ -723,7 +761,7 @@ static void sort_small(double *a, u32 n) {
  * pieces that cross an edge, and for those beside one whose width reaches
  * over it: the tile beyond has them too, though their middles may not reach
  * it. */
-static void fit_edges(Tin *T, Prep *P, double grade, double mu, double mv) {
+static void fit_edges(Tin *T, Prep *P, double grade, double mu, double mv, const ProfilePoint *given) {
   const double ax = P->ax * mu, ay = P->ay * mv;      /* metres */
   const double bx = ax + P->ux * P->len, by = ay + P->uy * P->len;
   const double h = P->half;
@@ -775,11 +813,13 @@ static void fit_edges(Tin *T, Prep *P, double grade, double mu, double mv) {
       if (sk < smin_) smin_ = sk;
       if (sk > smax_) smax_ = sk;
     }
+    /* (A line with a given profile, Stage 5.18d: that, not the ground, so tiles of any levels give the edge one
+     * height.) */
     for (u32 k = 0; k < EDGE_FIT; k++) {
       double t = f0 + (f1 - f0) * (k + 0.5) / EDGE_FIT;
       double px = x0 + ex * t, py = y0 + ey * t;
-      zg[k] = height_at(T, px / mu, py / mv);
       sg[k] = (px - ax) * P->ux + (py - ay) * P->uy;
+      if (!given_along(P, given, sg[k], &zg[k])) zg[k] = height_at(T, px / mu, py / mv);
     }
     double fmin = sg[0], fmax = sg[0];
     for (u32 k = 1; k < EDGE_FIT; k++) { if (sg[k] < fmin) fmin = sg[k]; if (sg[k] > fmax) fmax = sg[k]; }
@@ -818,8 +858,9 @@ static void fit_edges(Tin *T, Prep *P, double grade, double mu, double mv) {
  * tile lists them in its own. */
 typedef struct { const double *s, *z, *g; const u32 *line; const u8 *portal; u32 n; } Pins;
 
-static double edge_dz(const Prep *prep, const RoadPiece *pieces, const Pins *pins, const u32 *list, u32 from, u32 to, u32 bit,
-                      double mu, double mv, double x, double y, double zt, int *found, int *onFace, double *inFace) {
+static double edge_dz(const Prep *prep, const RoadPiece *pieces, const Pins *pins, const ProfilePoint *given, const u32 *list,
+                      u32 from, u32 to, u32 bit, double mu, double mv, double x, double y, double zt, int *found, int *onFace,
+                      double *inFace) {
   double zLevel = 0, prLevel = 0, dLevel = 0, sLevel = 0;
   double sumW = 0, sumWD = 0, wMost = 0, inMost = 0;
   int level = 0;
@@ -835,9 +876,15 @@ static double edge_dz(const Prep *prep, const RoadPiece *pieces, const Pins *pin
     /* The road's height here: the fit, along the piece (not held to its
      * ends), carried at most a few metres past the stretch it was fitted on. */
     double sv = (x - P->ax) * mu * P->ux + (y - P->ay) * mv * P->uy;
-    if (sv < P->fa[e] - 4.0) sv = P->fa[e] - 4.0;
-    if (sv > P->fb[e] + 4.0) sv = P->fb[e] + 4.0;
-    double zr = P->fz[e] + P->fg[e] * sv, tol = EDGE_TOL;
+    /* (A line with a given profile, Stage 5.18d: that profile at the point itself, held to exactly; the tile beyond
+     * holds it there the same.) */
+    double zr, tol = EDGE_TOL;
+    if (given_along(P, given, sv, &zr)) tol = 0.0;
+    else {
+      if (sv < P->fa[e] - 4.0) sv = P->fa[e] - 4.0;
+      if (sv > P->fb[e] + 4.0) sv = P->fb[e] + 4.0;
+      zr = P->fz[e] + P->fg[e] * sv;
+    }
     /* Where the line comes off a bridge near here, the deck's height, eased
      * in as the profile does it (the pins are the same for both tiles), and
      * at the deck itself no leeway. */
@@ -846,7 +893,9 @@ static double edge_dz(const Prep *prep, const RoadPiece *pieces, const Pins *pin
       double wBest = 0, zBest = 0;
       for (u32 q = 0; q < pins->n; q++) {
         if (pins->line[q] != P->line) continue;
-        const double delta = pins->z[q] - (P->fz[e] + P->fg[e] * ((pins->s[q] - P->s0) / perS));
+        double road = P->fz[e] + P->fg[e] * ((pins->s[q] - P->s0) / perS), zg;
+        if (P->gCount && given_at(given, P->gFirst, P->gCount, pins->s[q], &zg)) road = zg;   /* (as the profile is) */
+        const double delta = pins->z[q] - road;
         if (m_abs(delta) > PIN_MOST && !pins->portal[q]) continue;
         double ramp = m_abs(delta) / PIN_GRADE;
         if (ramp < PIN_RAMP) ramp = PIN_RAMP;
@@ -903,7 +952,8 @@ void qm_unit_metres(double west, double south, double east, double north, double
  * normals still belong to them); new ones follow, and `m->recompute` flags
  * every vertex whose normal must be worked out again.
  */
-u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv, ShapeStats *st) {
+u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *given, u32 givenCount,
+             double mu, double mv, ShapeStats *st) {
   memset(st, 0, sizeof(ShapeStats));
   st->pieces = count;
   st->vertices = m->vertexCount;
@@ -977,6 +1027,17 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
   Prep *prep = (Prep *)take(count * sizeof(Prep), &oom);
   if (oom) return (st->status = QM_OOM);
   memset(lines, 0, nlines * sizeof(LineProfile));
+  /* The given profiles (Stage 5.18d), by line: each a run of points with its number, in order along it. */
+  u32 *gFirst = (u32 *)take(nlines * 4u + 4u, &oom), *gCount = (u32 *)take(nlines * 4u + 4u, &oom);
+  if (oom) return (st->status = QM_OOM);
+  for (u32 l = 0; l < nlines; l++) gFirst[l] = gCount[l] = 0;
+  for (u32 i = 0; i < givenCount;) {
+    const float id = given[i].line;
+    u32 j = i + 1u;
+    while (j < givenCount && given[j].line == id) j++;
+    if (id >= 0 && (u32)id <= maxLine && lineIndex[(u32)id] != NONE) { gFirst[lineIndex[(u32)id]] = i; gCount[lineIndex[(u32)id]] = j - i; }
+    i = j;
+  }
   /* The pins, by line and distance along: the pieces near one are shaped even where level already. */
   u32 npins = 0;
   for (u32 i = 0; i < count; i++) if (pieces[i].priority < 0) npins++;
@@ -1009,6 +1070,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
     P->crosses = 0;
     P->fit = 0;
     P->k0 = P->k1 = 0;
+    P->gFirst = P->gCount = 0;
     if (R->priority < 0) continue;            /* a pin (see the top): applied with the profiles */
     LineProfile *L = &lines[P->line];
     if (R->priority > L->priority) L->priority = R->priority;
@@ -1018,6 +1080,8 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
     P->len = m_sqrt(dx * dx + dy * dy);
     P->ux = P->len > 0 ? dx / P->len : 1; P->uy = P->len > 0 ? dy / P->len : 0;
     P->half = m_abs(R->half); P->s0 = R->s0; P->s1 = R->s1;
+    P->gFirst = gFirst[P->line]; P->gCount = gCount[P->line];
+    if (P->gCount) L->given = 1;
     for (u32 q = 0; q < npins; q++) {
       if (!pinQ[q] || pinL[q] != P->line) continue;
       if (m_abs(pinS[q] - R->s0) < 0.05) P->sq0 = 1;
@@ -1025,7 +1089,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
     }
     P->bandL = P->bandR = BAND_MIN;
     P->faceL = P->faceR = 0;
-    if (P->len >= 0.05) fit_edges(&T, P, R->grade, mu, mv);
+    if (P->len >= 0.05) fit_edges(&T, P, R->grade, mu, mv, given);
     double t0, t1;
     if (P->len < 0.05 || !clip_square(R->u0, R->v0, R->u1, R->v1, &t0, &t1)) continue;
     {
@@ -1050,7 +1114,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
      * edge meets the ground again: the band. Where the hillside is as steep
      * as the face, they never meet: the widest band, its last quarter a
      * steep step back to the ground (a rock cut). */
-    double worst = 0;
+    double worst = 0, givenOff = 0;
     for (u32 k = 0; k < 3; k++) {
       double f = t0 + (t1 - t0) * (0.1 + 0.4 * k);
       double cx = R->u0 + (R->u1 - R->u0) * f, cy = R->v0 + (R->v1 - R->v0) * f;
@@ -1059,8 +1123,11 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
       double zc = height_at(&T, cx, cy);
       double zl = height_at(&T, cx + nx * h, cy + ny * h), zr = height_at(&T, cx - nx * h, cy - ny * h);
       double zl2 = height_at(&T, cx + nx * o, cy + ny * o), zr2 = height_at(&T, cx - nx * o, cy - ny * o);
+      /* The road's own height there: its given one where it has one (how far the ground strays from it counts). */
+      double zm = zc;
+      if (P->gCount && given_at(given, P->gFirst, P->gCount, R->s0 + (R->s1 - R->s0) * f, &zm) && m_abs(zm - zc) > givenOff) givenOff = m_abs(zm - zc);
       double fl, fr, ml, mr;
-      double bl = band_for(zl - zc, (zl2 - zl) / PROBE, &fl, &ml), br = band_for(zr - zc, (zr2 - zr) / PROBE, &fr, &mr);
+      double bl = band_for(zl - zm, (zl2 - zl) / PROBE, &fl, &ml), br = band_for(zr - zm, (zr2 - zr) / PROBE, &fr, &mr);
       if (bl > P->bandL) P->bandL = bl;
       if (br > P->bandR) P->bandR = br;
       if (fl > P->faceL) P->faceL = fl;
@@ -1074,7 +1141,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
      * (its height along must change) or it crosses the tile's edge (the tile
      * beyond decides by probes of its own, which may disagree: both shape
      * it, so the two meet). */
-    if ((worst < LEVEL_MIN || worst < LEVEL_SLOPE * P->half) && t0 <= 0 && t1 >= 1) {
+    if ((worst < LEVEL_MIN || worst < LEVEL_SLOPE * P->half) && givenOff <= GIVEN_TOL && t0 <= 0 && t1 >= 1) {
       int pinned = 0;
       double lo = (P->s0 < P->s1 ? P->s0 : P->s1) - PIN_RAMP_MOST, hi = (P->s0 < P->s1 ? P->s1 : P->s0) + PIN_RAMP_MOST;
       for (u32 q = 0; q < npins && !pinned; q++) pinned = pinL[q] == P->line && pinS[q] >= lo && pinS[q] <= hi;
@@ -1196,7 +1263,9 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
           sampS = s2; sampZ = z2; sampX = x2; sampLine = l2; sampleCap = cap;
         }
         double h = P->half, ofs = P->half + PROBE;
-        double zc = height_at(&T, x, y);
+        /* Its middle's height: its line's given one where it has one (Stage 5.18d), else the ground under it. */
+        double zc;
+        if (!(P->gCount && given_at(given, P->gFirst, P->gCount, P->s0 + (P->s1 - P->s0) * f, &zc))) zc = height_at(&T, x, y);
         double zl = height_at(&T, x + nx * h, y + ny * h), zr = height_at(&T, x - nx * h, y - ny * h);
         double zl2 = height_at(&T, x + nx * ofs, y + ny * ofs), zr2 = height_at(&T, x - nx * ofs, y - ny * ofs);
         double *X = sampX + nsamples * 6u;
@@ -1351,8 +1420,12 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
             ox[e] = px + nxq * o2 * sign; oy[e] = py + nyq * o2 * sign;
           }
           if (what && (skip || !Ln->count)) continue;
+          /* (A line with a given profile, Stage 5.18d: its level width's edges run to the tile's very edge, where the
+           * tile beyond, of whatever level, puts the same vertices at the same heights, held to the profile there by
+           * both edge rules: so the track on it runs on across the edge without a step.) */
+          const double iu = what == 0 && Ln->given ? 0.0 : insetU, iv = what == 0 && Ln->given ? 0.0 : insetV;
           double t0, t1;
-          if (!clip_box(ox[0], oy[0], ox[1], oy[1], insetU, insetV, Q - insetU, Q - insetV, &t0, &t1)) continue;
+          if (!clip_box(ox[0], oy[0], ox[1], oy[1], iu, iv, Q - iu, Q - iv, &t0, &t1)) continue;
           insert_segment(&T, ox[0] + (ox[1] - ox[0]) * t0, oy[0] + (oy[1] - oy[0]) * t0,
                          ox[0] + (ox[1] - ox[0]) * t1, oy[0] + (oy[1] - oy[0]) * t1, chain, chainCap);
         }
@@ -1452,7 +1525,8 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
       for (u32 q = 0; q < npins && !held[i]; q++) held[i] = pinP[q] && pinL[q] == best && m_abs(ps[first + i] - pinS[q]) < PORTAL_HOLD;
     }
     u32 anchored = 0;
-    for (u32 i = 0; i < count; i++) {
+    /* (A line with a given profile is not anchored: its heights must be the same in every tile it crosses.) */
+    for (u32 i = 0; i < count && !L->given; i++) {
       Prep *P = &prep[i];
       if (!P->used || P->line != best) continue;
       const RoadPiece *R = &pieces[i];
@@ -1497,7 +1571,8 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
      * and rejoins its own ground a little further on, rather than cutting a
      * trench wherever the hillside climbs faster than a road may. */
     double *raw = praw + first, *out = pz + first, *s = ps + first;
-    smooth_along(s, raw, out, scratchB, n, SMOOTH, 0);
+    if (L->given) { for (u32 k = 0; k < n; k++) out[k] = raw[k]; }   /* smoothed once, where it was made */
+    else smooth_along(s, raw, out, scratchB, n, SMOOTH, 0);
     /* Pins: the deck's height and grade where the line comes off a bridge,
      * eased in (the strongest pin wins where two reach). */
     for (u32 k = 0; k < n; k++) { pinW[k] = 0; pinOff[k] = 0; }
@@ -1681,7 +1756,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv
       if (!(we > 1e-9)) continue;
       int f = 0, face = 0;
       double in = 0;
-      double d1 = edge_dz(prep, pieces, &pinSet, bucketList, from, to, e ? bitY : bitX, mu, mv, x, y, zt, &f, &face, &in);
+      double d1 = edge_dz(prep, pieces, &pinSet, given, bucketList, from, to, e ? bitY : bitX, mu, mv, x, y, zt, &f, &face, &in);
       if (!f) continue;
       dz += we * d1;
       found = 1;

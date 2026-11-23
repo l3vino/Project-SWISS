@@ -41,9 +41,10 @@ INLINE u32 max3(u32 a, u32 b, u32 c) { u32 m = a > b ? a : b; return m > c ? m :
  *                pieces it was drawn with (shape.c): physics stands on the
  *                same shaped triangles as are drawn
  * @param resOff  where to write the QmGround header
+ * @param profilesOff, profileCount  the lines' given profiles it was drawn with (ProfilePoint, shape.c), or none
  */
 EXPORT u32 qm_ground(u32 srcOff, u32 srcLen, double west, double south, double east, double north,
-                     u32 roadsOff, u32 roadCount, u32 resOff) {
+                     u32 roadsOff, u32 roadCount, u32 resOff, u32 profilesOff, u32 profileCount) {
   QmGround *res = (QmGround *)PTR(resOff);
   memset(res, 0, sizeof(QmGround));
 
@@ -54,7 +55,8 @@ EXPORT u32 qm_ground(u32 srcOff, u32 srcLen, double west, double south, double e
     double mu, mv;
     ShapeStats st;
     qm_unit_metres(west, south, east, north, &mu, &mv);
-    status = qm_shape(&m, (const RoadPiece *)PTR(roadsOff), roadCount, mu, mv, &st);
+    status = qm_shape(&m, (const RoadPiece *)PTR(roadsOff), roadCount, (const ProfilePoint *)PTR(profilesOff),
+                      profilesOff ? profileCount : 0, mu, mv, &st);
     if (status != QM_OK) return (res->status = status);
   }
   return ground_build(&m, res);

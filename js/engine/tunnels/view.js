@@ -47,11 +47,14 @@ export class TunnelView {
     this.checks = new PortalChecks();
     this.insideBore = {};
     // What the thread has been sent (each thing once).
-    this.sent = { lon: NaN, lat: NaN, source: null, tunnelVersion: -1, runs: new Map(), deckEpoch: -1, deckOn: null, decks: new Map(), track: null };
+    this.sent = { lon: NaN, lat: NaN, source: null, tunnelVersion: -1, runs: new Map(), deckEpoch: -1, deckOn: null, decks: new Map(), track: null,
+      railVersion: -1, rails: new Map() };
     this.deckIds = 0;
     thread.on('mesh', (msg) => this.#mesh(msg));
     thread.on('mesh-unused', ({ id }) => this.#unused(id));
     thread.on('lists', (lists) => this.#lists(lists));
+    // The railways' profiles made there (5.18d): the terrain is cut along them (vector/tiles.js setProfiles).
+    thread.on('profiles', ({ key, lines }) => this.vector.setProfiles(key, lines));
   }
 
   setEnabled(on) {
@@ -62,7 +65,12 @@ export class TunnelView {
   /** Once a frame: the camera, and the road tiles' tunnels and the decks where they changed, to the thread; which
    *  mesh the camera is in. */
   update(camera) {
-    if (!this.enabled) return;
+    // The detail tiles' railway lines whether the tunnels are on or not: their profiles cut the terrain either way.
+    if (this.vector.railVersion !== this.sent.railVersion) this.#sendRails();
+    if (!this.enabled) {
+      if (camera.lon !== this.sent.lon || camera.lat !== this.sent.lat) this.#sendCamera(camera);
+      return;
+    }
     this.#sendRoads();
     if (this.vector.tunnelVersion !== this.sent.tunnelVersion) this.#sendRuns();
     if (this.vector.decks) this.#sendDecks(this.vector.decks);
@@ -71,11 +79,28 @@ export class TunnelView {
       this.sent.track = this.vector.tracks;
       this.thread.send('track', { on: this.vector.tracks });
     }
-    if (camera.lon !== this.sent.lon || camera.lat !== this.sent.lat) {
-      this.sent.lon = camera.lon; this.sent.lat = camera.lat;
-      this.thread.send('camera', { lon: camera.lon, lat: camera.lat });
-    }
+    if (camera.lon !== this.sent.lon || camera.lat !== this.sent.lat) this.#sendCamera(camera);
     this.#inside(camera);
+  }
+
+  #sendCamera(camera) {
+    this.sent.lon = camera.lon; this.sent.lat = camera.lat;
+    this.thread.send('camera', { lon: camera.lon, lat: camera.lat });
+  }
+
+  /* The detail tiles' railway lines (vector/tiles.js t.rails), each tile's once, and the tiles gone (5.18d). */
+  #sendRails() {
+    this.sent.railVersion = this.vector.railVersion;
+    this.vector.profilesExpected = !this.thread.missing;
+    const live = new Set(), added = [], removed = [];
+    for (const [key, t] of this.vector.tiles) {
+      if (t.level !== 0 || !t.rails?.length) continue;
+      live.add(key);
+      if (this.sent.rails.get(key) !== t.rails) { this.sent.rails.set(key, t.rails); added.push([key, t.rails]); }
+    }
+    for (const key of this.sent.rails.keys()) if (!live.has(key)) removed.push(key);
+    for (const key of removed) this.sent.rails.delete(key);
+    if (added.length || removed.length) this.thread.send('rails', { added, removed });
   }
 
   /**

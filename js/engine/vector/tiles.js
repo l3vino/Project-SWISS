@@ -52,7 +52,8 @@ import { LruList } from '../lru.js';
 import { GpuPool } from './pool.js';
 import { VectorSource } from './source.js';
 import { schemaTables, BLOCK } from '../../formats/vector-tile.js';
-import { piecesFor, neighboursIn, PIECE_FLOATS, TRACK_FLOATS } from './pieces.js';
+import { piecesFor, neighboursIn, PIECE_FLOATS, TRACK_FLOATS, PROFILE_FLOATS } from './pieces.js';
+import { railLines } from './rails.js';
 import { bridgeRuns, pinsFor, PIN_FLOATS } from './bridges.js';
 import { portalPinsFor, joinPins, floorNear, floorKey } from './portals.js';
 
@@ -158,9 +159,15 @@ export class VectorTiles {
     // pieces are gathered (roadsFor).
     this.tracks = true;
     this.trackScratch = { data: new Float32Array(256 * TRACK_FLOATS), count: 0 };
+    // The railway lines' given profiles handed to the terrain with the pieces (5.18d: PROFILE_FLOATS each).
+    this.profileScratch = { data: new Float32Array(1024 * PROFILE_FLOATS), count: 0 };
     this.version = 0;
-    // Changes whenever a detail tile with tunnels comes or goes (engine/tunnels).
+    // Changes whenever a detail tile with tunnels comes or goes (engine/tunnels), and one with railways (their profiles:
+    // engine/tunnels/rail-profiles.js, 5.18d).
     this.tunnelVersion = 0;
+    this.railVersion = 0;
+    // Whether the railways' profiles come at all (the tunnels' thread there: engine/tunnels/view.js), so loads wait.
+    this.profilesExpected = false;
     this.layers = { roads: true, paths: true };
     // Exact widths: the adapter's service, the rules for matching, the
     // tiles waiting (nearest first), matched tiles' classes by tile key.
@@ -601,11 +608,31 @@ export class VectorTiles {
   /* A detail tile's stamp from what was done to it since it came: its
    * widths, its bridges' pins and its tunnels' (0: nothing). Whether it changed. */
   #restamp(t) {
-    const w = t.widthStamp ?? 0, d = t.deckStamp ?? 0, p = t.portalStamp ?? 0;
-    const stamp = !w && !d && !p ? 0 : (Math.imul(Math.imul(Math.imul(2166136261 ^ w, 16777619) ^ d, 16777619) ^ p, 16777619) >>> 0) || 1;
+    const w = t.widthStamp ?? 0, d = t.deckStamp ?? 0, p = t.portalStamp ?? 0, r = t.profileStamp ?? 0;
+    const stamp = !w && !d && !p && !r ? 0
+      : (Math.imul(Math.imul(Math.imul(Math.imul(2166136261 ^ w, 16777619) ^ d, 16777619) ^ p, 16777619) ^ r, 16777619) >>> 0) || 1;
     if (stamp === t.stamp) return false;
     t.stamp = stamp;
     return true;
+  }
+
+  /**
+   * A detail tile's railway lines' height profiles, made on the tunnels' thread (engine/tunnels/rail-profiles.js,
+   * 5.18d): [[line, Float32Array [s, z, …]]]. Its railways cut into the terrain take their heights from them
+   * (pieces.js, wasm/src/shape.c), the same in every terrain tile, and the terrain tiles over it are cut again.
+   */
+  setProfiles(key, lines) {
+    const t = this.tiles.get(key);
+    if (!t?.cpu) return;
+    t.cpu.profiles = new Map(lines);
+    let h = 2166136261;
+    for (const [line, p] of lines) {
+      h = Math.imul(h ^ line, 16777619);
+      h = Math.imul(h ^ p.length, 16777619);
+      h = Math.imul(h ^ Math.round((p[1] || 0) * 10), 16777619);
+    }
+    t.profileStamp = (h >>> 0) || 1;
+    if (this.#restamp(t)) this.version++;
   }
 
   /* ---- tunnels' portals --------------------------------------------------- */
@@ -797,10 +824,13 @@ export class VectorTiles {
       // With the distances along its lines and its runs of bridge, which the
       // decode thread worked out (formats/vector-tile.js segmentArcs, bridges.js).
       t.cpu = { block: block.slice(0, size), z: t.z, x: t.x, y: t.y, id: 0, owners: 0, pins: null, gaps: null, decks: null,
-        widen: null, aprons: null, arcs: result.arcs ?? undefined };
+        widen: null, aprons: null, profiles: null, arcs: result.arcs ?? undefined };
       this.cpuBytes += size + (result.arcs?.byteLength ?? 0);
       t.widths = 0;
-      t.stamp = t.widthStamp = t.deckStamp = t.portalStamp = 0;
+      t.stamp = t.widthStamp = t.deckStamp = t.portalStamp = t.profileStamp = 0;
+      // Its railway lines, for their profiles (rails.js; setProfiles brings them).
+      t.rails = railLines(t.cpu, this.shapeKinds);
+      if (t.rails.length) this.railVersion++;
       t.deckPins = t.portalPins = null;
       // Its bridges are joined to their decks on the next frames (#refreshDecks).
       t.bridges = result.runs ?? null;
@@ -827,9 +857,11 @@ export class VectorTiles {
     this.cpuBytes -= t.cpu.block.byteLength + (t.cpu.arcs?.byteLength ?? 0);
     t.cpu = null;
     t.widths = 0;
-    t.stamp = t.widthStamp = t.deckStamp = t.portalStamp = 0;
+    t.stamp = t.widthStamp = t.deckStamp = t.portalStamp = t.profileStamp = 0;
     t.deckPins = t.portalPins = null;
     t.bridges = null;
+    if (t.rails?.length) this.railVersion++;
+    t.rails = null;
     if (t.tunnels) { t.tunnels = null; this.tunnelVersion++; }
     this.deckDirty.delete(t);
     this.portalDirty.delete(t);
@@ -972,23 +1004,27 @@ export class VectorTiles {
       for (let x = x0; x <= x1; x++) {
         const t = this.tiles.get(keyOf(z, x, y));
         if (t && t.state !== READY && this.#wanted(t, now)) return true;
+        // Or its railways' profiles still on their way from the tunnels' thread (5.18d: setProfiles).
+        if (this.profilesExpected && t && t.state === READY && t.rails?.length && !t.cpu?.profiles) return true;
       }
     }
     return false;
   }
 
   /**
-   * The pieces to cut into a terrain tile (pieces.js): { pieces, tracks, sig }, the
-   * pieces a fresh Float32Array (null if there are none) that can be handed
+   * The pieces to cut into a terrain tile (pieces.js): { pieces, tracks, profiles, sig },
+   * the pieces a fresh Float32Array (null if there are none) that can be handed
    * to a decode thread, the railways' track pieces likewise (null for none,
-   * or with the track off: 5.18b), the signature as roadsSig gives it. Null
-   * while the roads there are not all here.
+   * or with the track off: 5.18b), their lines' given profiles likewise (null
+   * for none: 5.18d), the signature as roadsSig gives it. Null while the roads
+   * there are not all here.
    */
   roadsFor(rect) {
     const sig = this.roadsSig(rect);
     if (sig === ROADS_NOT_READY) return null;
-    const out = this.scratch, tracks = this.tracks ? this.trackScratch : null;
+    const out = this.scratch, tracks = this.tracks ? this.trackScratch : null, profiles = this.profileScratch;
     out.count = 0;
+    profiles.count = 0;
     if (tracks) tracks.count = 0;
     const tiles = this.coverScratch;
     for (let i = 0; i < tiles.length; i++) {
@@ -996,11 +1032,12 @@ export class VectorTiles {
       tiles[i].cpu.id = i;
       // Its neighbours cut in too: the parts of its lines over their squares are theirs (pieces.js, 5.18c).
       tiles[i].cpu.owners = neighboursIn(tiles, tiles[i]);
-      piecesFor([tiles[i].cpu], rect, this.shapeKinds, this.halfWidths, out, tracks);
+      piecesFor([tiles[i].cpu], rect, this.shapeKinds, this.halfWidths, out, tracks, profiles);
     }
     return {
       pieces: out.count ? out.data.slice(0, out.count * PIECE_FLOATS) : null,
       tracks: tracks?.count ? tracks.data.slice(0, tracks.count * TRACK_FLOATS) : null,
+      profiles: profiles.count ? profiles.data.slice(0, profiles.count * PROFILE_FLOATS) : null,
       sig,
     };
   }

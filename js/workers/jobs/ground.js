@@ -7,12 +7,18 @@
  */
 
 import { fetchBytes } from '../../core/net.js';
-import { PIECE_FLOATS } from '../../engine/vector/pieces.js';
+import { PIECE_FLOATS, PROFILE_FLOATS } from '../../engine/vector/pieces.js';
 
 /** Road pieces (engine/vector/pieces.js) into wasm memory: [offset, count]. */
 export function writeRoads(core, roads) {
   if (!roads || roads.length < PIECE_FLOATS) return [0, 0];
   return [core.write(new Uint8Array(roads.buffer, roads.byteOffset, roads.byteLength)), Math.floor(roads.length / PIECE_FLOATS)];
+}
+
+/** The railways' given profiles (pieces.js PROFILE_FLOATS a point, 5.18d) into wasm memory: [offset, count]. */
+export function writeProfiles(core, profiles) {
+  if (!profiles || profiles.length < PROFILE_FLOATS) return [0, 0];
+  return [core.write(new Uint8Array(profiles.buffer, profiles.byteOffset, profiles.byteLength)), Math.floor(profiles.length / PROFILE_FLOATS)];
 }
 
 /**
@@ -21,20 +27,21 @@ export function writeRoads(core, roads) {
  * `ground`); this job is for a tile loaded before physics needed it, fetched again by URL with the same headers,
  * which the HTTP cache normally answers without the network. { missing: true } where the service has no such tile.
  */
-export async function groundJob(core, { url, rect, roads, accept, priority }, signal) {
+export async function groundJob(core, { url, rect, roads, profiles, accept, priority }, signal) {
   const bytes = await fetchBytes(url, { signal, priority, headers: accept ? { accept } : undefined });
   if (!bytes) return { missing: true };
-  return groundIndex(core, new Uint8Array(bytes), rect, roads);
+  return groundIndex(core, new Uint8Array(bytes), rect, roads, profiles);
 }
 
-/** The index alone, shaped with the same pieces as the tile was drawn with. */
-export function groundIndex(core, bytes, rect, roads = null) {
+/** The index alone, shaped with the same pieces (and railways' given profiles) as the tile was drawn with. */
+export function groundIndex(core, bytes, rect, roads = null, profiles = null) {
   core.reset();
   const src = core.write(bytes);
   const [roadsOff, roadCount] = writeRoads(core, roads);
+  const [profilesOff, profileCount] = roadCount ? writeProfiles(core, profiles) : [0, 0];
   const resultOffset = core.alloc(core.exports.qm_ground_size());
   const status = core.exports.qm_ground(src, bytes.byteLength, rect.west, rect.south, rect.east, rect.north,
-    roadsOff, roadCount, resultOffset);
+    roadsOff, roadCount, resultOffset, profilesOff, profileCount);
   core.sync();
   if (status !== 0) throw new Error(`ground index failed (${status})`);
   return groundOut(core, resultOffset);

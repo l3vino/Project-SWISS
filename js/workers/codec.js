@@ -22,7 +22,7 @@ import { decodeVectorTile, segmentArcs, schemaKinds } from '../formats/vector-ti
 import { bridgeRuns } from '../engine/vector/bridges.js';
 import { tunnelRuns } from '../engine/tunnels/runs.js';
 import { TRACK_FLOATS } from '../engine/vector/pieces.js';
-import { writeRoads, groundJob, groundOut } from './jobs/ground.js';
+import { writeRoads, writeProfiles, groundJob, groundOut } from './jobs/ground.js';
 import { TRACK_STRIDE } from '../engine/terrain/format.js';
 import { planBoxes, quarters, identifyUrl, readAnswer, matchWidths, segmentsHash } from '../formats/road-widths.js';
 import { buildIndex, indexBuffers, quickHash, INDEX_FORMAT } from '../formats/tileset-index.js';
@@ -60,7 +60,7 @@ rpc.on('init', ({ wasmModule }) => {
  * An absent tile is an ordinary answer here, not an error: coverage is ragged
  * at every border and the caller wants "no tile" without an exception.
  */
-rpc.on('terrain-tile', async ({ url, rect, skirt, accept, priority, ground, roads, tracks }, signal) => {
+rpc.on('terrain-tile', async ({ url, rect, skirt, accept, priority, ground, roads, tracks, profiles }, signal) => {
   let response = await fetchFile(url, { signal, priority, headers: accept ? { accept } : undefined, pass: accept ? [406] : undefined });
   // A server that will not negotiate the extension list still has the tile;
   // ask plainly, and tell the caller to stop asking for extensions.
@@ -70,7 +70,7 @@ rpc.on('terrain-tile', async ({ url, rect, skirt, accept, priority, ground, road
 
   const bytes = new Uint8Array(await bodyOf(response, signal));
   if (bytes.byteLength < 92) return { missing: true, acceptRejected };
-  const result = decodeTerrain(bytes, rect, skirt, url, roads, ground, tracks);
+  const result = decodeTerrain(bytes, rect, skirt, url, roads, ground, tracks, profiles);
   result.acceptRejected = acceptRejected;
   return result;
 });
@@ -90,20 +90,22 @@ function shapeStats(r, at, asked) {
 }
 
 /* A Quantized Mesh tile into 24-byte vertices and indices (wasm/src/qm.c),
- * shaped by `roads` if given, with physics' index if `withGround`, and the
+ * shaped by `roads` if given (their railways' heights from `profiles`, the
+ * given profiles: 5.18d), with physics' index if `withGround`, and the
  * railways' track built over it from `tracks` (5.18b: wasm/src/track.c). */
-function decodeTerrain(bytes, rect, skirt, url, roads = null, withGround = false, tracks = null) {
+function decodeTerrain(bytes, rect, skirt, url, roads = null, withGround = false, tracks = null, profiles = null) {
   const start = performance.now();
   core.reset();
   const src = core.write(bytes);
   const [roadsOff, roadCount] = writeRoads(core, roads);
   const [tracksOff, trackCount] = roadCount ? writeTracks(tracks) : [0, 0];
+  const [profilesOff, profileCount] = roadCount ? writeProfiles(core, profiles) : [0, 0];
   const groundOff = withGround ? core.alloc(core.exports.qm_ground_size()) : 0;
   const resultSize = core.exports.qm_result_size();
   const resultOffset = core.alloc(resultSize);
 
   const status = core.exports.qm_decode(src, bytes.byteLength, rect.west, rect.south, rect.east, rect.north,
-    skirt || 0, roadsOff, roadCount, groundOff, resultOffset, tracksOff, trackCount);
+    skirt || 0, roadsOff, roadCount, groundOff, resultOffset, tracksOff, trackCount, profilesOff, profileCount);
   // The decoder grows the arena, which detaches every view we were holding.
   core.sync();
   if (status !== 0) throw new Error(`quantized mesh decode failed (${status})`);

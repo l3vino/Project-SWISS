@@ -45,8 +45,7 @@
 
 import { VIEW, hostOf } from '../../core/scheduler.js';
 import { geodeticToEcef } from '../../core/math.js';
-import { tileAt, tileRect, tileKey } from '../terrain/tiling.js';
-import { groundEntry, sampleEntry, groundSample } from '../terrain/ground.js';
+import { GroundPoints } from '../terrain/ground-points.js';
 import { TUBE_END, TUBE_POINT } from './groups.js';
 import { placeOn } from './trace.js';
 import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, lookFor, LOOK, MATERIAL } from './sections.js';
@@ -155,8 +154,6 @@ export class TunnelSet {
     this.retiring = [];            // records gone, drawn until the tubes taking their place are (r.successors)
     this.wholes = [];              // whole tunnels traced this session
     this.traces = new Map();       // trace key → 'pending' | 'failed'
-    this.grounds = new Map();      // list key → { lonlat, heights (once in), state, … } (#groundFor)
-    this.groundTiles = new Map();  // terrain tile key → { z, x, y, url, rect, accept, host, state, entry, usedAt }
     this.meshes = [];              // what the pass draws
     this.portals = [];             // where the terrain is opened
     this.cuts = [];                // the bores cut out of what is built (cuts.js), and a number that changes with them
@@ -173,7 +170,9 @@ export class TunnelSet {
     this.gpuBytes = 0;             // what the meshes take on the GPU (the render thread's)
     this.meshIds = 0;
     this.stats = { tubes: 0, meshes: 0, skipped: 0, traced: 0, traceTiles: 0, traceBytes: 0, grounds: 0, groundTiles: 0, failed: 0, meshMs: 0 };
-    this.scratch = groundSample();
+    // The ground round the portals and along the tubes (#groundFor), shared with the railways' profiles (5.18d).
+    this.ground = new GroundPoints(terrain.sourceList, { most: GROUND_LEVEL, least: LEAST_LEVEL, tilesMost: GROUND_TILES_MOST,
+      listsMost: GROUNDS_MOST, tries: GROUND_TRIES, againMs: GROUND_AGAIN_MS, stats: this.stats, label: 'tunnels' });
     this.eye = { lon: 0, lat: 0 };   // the camera, for the order of the jobs (#pick)
     this.approaches = null;        // the runs' approach ends by cell (#approachOf), for one tunnelVersion
   }
@@ -246,7 +245,7 @@ export class TunnelSet {
   /** How a portal's floor was found (#portalFloor: the ground right in front, the approach's line, the height and the
    *  rise taken; the approach's points' ground; the finest level of the tiles it was taken from), for the probe. */
   portalGround(end, family) {
-    const g = this.grounds.get(`a|${family}|${end.lon.toFixed(5)}|${end.lat.toFixed(5)}`);
+    const g = this.ground.lists.get(`a|${family}|${end.lon.toFixed(5)}|${end.lat.toFixed(5)}`);
     if (!g || g.state !== 'done') return null;
     const r2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
     // (Whether its way goes on as a bridge, its deck's height over the approach's points and whether it was not in
@@ -284,20 +283,16 @@ export class TunnelSet {
     }
     for (const r of order) r.pickD = this.#distance(r, m);
     order.sort((a, b) => a.pickD - b.pickD);
-    const ready = (g) => {
-      if (g.state === 'again' && now >= g.againAt) g.state = 'wanted';
-      return g.state === 'wanted' && this.client.canRun(g.host);
-    };
+    const ground = this.ground;
     for (const r of order) {
       if (r.meshWanted && !(r.meshAgainAt > now)) { this.#runMesh(r); return true; }
       if (r.traceWanted && this.client.canRun(r.traceHost)) { this.#runTrace(r); return true; }
       for (const g of r.grounds ?? []) {
         if (g.state !== 'tiles') continue;
-        for (const t of g.tiles) if (ready(t)) { this.#runGround(t); return true; }
+        for (const t of g.tiles) if (ground.ready(t, this.client, now)) { ground.run(t, this.client); return true; }
       }
     }
-    for (const t of this.groundTiles.values()) if (ready(t)) { this.#runGround(t); return true; }
-    return false;
+    return ground.runAny(this.client, now);
   }
 
   /* Metres from the camera to the nearest of a record's tube's box (0 inside it). */
@@ -748,7 +743,7 @@ export class TunnelSet {
    * in yet is found again, and the tubes with that portal are looked at again (5.17x). */
   #decksCame() {
     const again = new Set();
-    for (const g of this.grounds.values()) {
+    for (const g of this.ground.lists.values()) {
       if (g.deckless === undefined || g.deckless === this.deckEpoch || g.state !== 'done') continue;
       g.height = undefined;
       g.deckless = undefined;
@@ -804,118 +799,12 @@ export class TunnelSet {
     return cells;
   }
 
-  /* A list of points whose ground is wanted (`make` gives { lonlat: [lon, lat, …], … } the first time; the rest
-   * is kept as `pts`): asks for its tiles, and once they are in its `heights` (NaN where not known). */
+  /* A list of points whose ground is wanted (GroundPoints.list), kept with the record asking for it, so #pick fetches
+   * the nearest tube's first. */
   #groundFor(key, make) {
-    let g = this.grounds.get(key);
-    if (!g) {
-      const pts = make();
-      g = { key, pts, lonlat: pts.lonlat, pointTiles: [], tiles: [], heights: null, state: 'tiles' };
-      for (let i = 0; i < g.lonlat.length; i += 2) {
-        const tile = this.#groundTile(g.lonlat[i], g.lonlat[i + 1], pts.under?.[i / 2] ?? Infinity);
-        g.pointTiles.push(tile);
-        if (tile && !g.tiles.includes(tile)) g.tiles.push(tile);
-      }
-      if (!g.tiles.length) g.state = 'failed';
-      if (this.grounds.size >= GROUNDS_MOST) {
-        // The oldest lists done with go (a record still wanting one asks again).
-        for (const [k, q] of this.grounds) {
-          if (this.grounds.size < GROUNDS_MOST * 0.75) break;
-          if (q.state !== 'tiles') this.grounds.delete(k);
-        }
-      }
-      this.grounds.set(key, g);
-      this.stats.grounds = this.grounds.size;
-    }
-    if (g.state === 'tiles') this.#resolveGround(g);
+    const g = this.ground.list(key, make);
     if (g.state === 'tiles' && this.asking && !this.asking.grounds.includes(g)) this.asking.grounds.push(g);
     return g;
-  }
-
-  /* The finest terrain tile a service has at a point (below level `under`), as a ground record (asked for when
-   * first wanted). */
-  #groundTile(lon, lat, under = Infinity) {
-    const source = this.terrain.sourceList.find((s) => s.adapter.covers(lon, lat));
-    if (!source) return null;
-    for (let z = Math.min(source.maxLevel, GROUND_LEVEL, under - 1); z >= LEAST_LEVEL; z--) {
-      const { x, y } = tileAt(z, lon, lat);
-      if (!source.isAvailable(z, x, y)) continue;
-      const key = tileKey(z, x, y);
-      let t = this.groundTiles.get(key);
-      if (!t) {
-        const url = source.urlFor(z, x, y);
-        t = { key, z, x, y, url, rect: tileRect(z, x, y), accept: source.accept, host: hostOf(url), state: 'wanted', entry: null };
-        this.groundTiles.set(key, t);
-      }
-      return t;
-    }
-    return null;
-  }
-
-  async #runGround(t) {
-    t.state = 'busy';
-    try {
-      const data = await this.client.run('terrain-ground', { url: t.url, rect: t.rect, accept: t.accept },
-        { cls: VIEW, cost: 2, host: t.host, timeout: 20000 });
-      t.entry = data.missing ? null : groundEntry(data, t.rect, { z: t.z, x: t.x, y: t.y });
-      t.state = 'done';
-    } catch (err) {
-      if (err.name === 'AbortError') { t.state = 'wanted'; return; }
-      this.stats.failed++;
-      // Asked for again a while later, GROUND_TRIES times in all (up to 5.17i a failure counted as a tile the service
-      // does not have, and a coarser one stood in for it for good: portal floors metres off under load).
-      t.tries = (t.tries ?? 0) + 1;
-      if (t.tries < GROUND_TRIES) {
-        t.state = 'again';
-        t.againAt = performance.now() + GROUND_AGAIN_MS * 3 ** (t.tries - 1);
-        return;
-      }
-      t.state = 'done';
-      console.warn(`[tunnels] ground ${t.z}/${t.x}/${t.y}: ${err.message} (${t.tries} tries)`);
-    }
-  }
-
-  /* Once a list's tiles are in: its points sampled. A tile the service did not have after all gives way to the next
-   * coarser one there. */
-  #resolveGround(g) {
-    let again = false;
-    for (let i = 0; i < g.pointTiles.length; i++) {
-      const t = g.pointTiles[i];
-      if (t?.state !== 'done' || t.entry) continue;
-      const coarser = this.#groundTile(g.lonlat[2 * i], g.lonlat[2 * i + 1], t.z);
-      g.pointTiles[i] = coarser;
-      if (coarser && !g.tiles.includes(coarser)) g.tiles.push(coarser);
-      again = true;
-    }
-    if (again) g.tiles = g.tiles.filter((t) => g.pointTiles.includes(t));
-    if (g.tiles.some((t) => t.state !== 'done')) return;
-    const now = performance.now();
-    g.heights = new Float64Array(g.pointTiles.length);
-    let known = 0;
-    for (let i = 0; i < g.pointTiles.length; i++) {
-      const t = g.pointTiles[i];
-      const ok = Boolean(t?.entry) && sampleEntry(t.entry, g.lonlat[2 * i], g.lonlat[2 * i + 1], this.scratch);
-      g.heights[i] = ok ? this.scratch.height : NaN;
-      if (ok) known++;
-    }
-    for (const t of g.tiles) t.usedAt = now;
-    g.state = known ? 'done' : 'failed';
-    this.#trimTiles();
-  }
-
-  /* The terrain tiles kept indexed: at most GROUND_TILES_MOST, those no list waits for going first, the least
-   * lately used first (one wanted again is asked for again). */
-  #trimTiles() {
-    if (this.groundTiles.size > GROUND_TILES_MOST) {
-      const waited = new Set();
-      for (const g of this.grounds.values()) if (g.state === 'tiles') for (const t of g.tiles) waited.add(t);
-      const spare = [...this.groundTiles.values()].filter((t) => t.state === 'done' && !waited.has(t)).sort((a, b) => (a.usedAt ?? 0) - (b.usedAt ?? 0));
-      for (const t of spare) {
-        if (this.groundTiles.size <= GROUND_TILES_MOST) break;
-        this.groundTiles.delete(t.key);
-      }
-    }
-    this.stats.groundTiles = this.groundTiles.size;
   }
 
   /*
@@ -1164,7 +1053,7 @@ export class TunnelSet {
           // Metres out of the portal as mapped its cutting runs (5.17t: the road in front is pinned there).
           cut: r.mesh.cuttings?.[e] ? Math.max(0, r.mesh.cuttings[e].len - ((f.start ?? 0) - (f.collar ?? 0))) : 0,
           // Whether its way goes on as a bridge (#portalFloor: its floor on the deck, 5.17x).
-          bridge: this.grounds.get(`a|${near.family}|${end.lon.toFixed(5)}|${end.lat.toFixed(5)}`)?.bridge === true,
+          bridge: this.ground.lists.get(`a|${near.family}|${end.lon.toFixed(5)}|${end.lat.toFixed(5)}`)?.bridge === true,
         });
       }
     }

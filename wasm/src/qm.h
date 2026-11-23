@@ -63,6 +63,15 @@ typedef struct {
   float line;             /* the line it belongs to (an integer) */
 } RoadPiece;
 
+/* A point of a line's given profile (Stage 5.18d: a railway's height along it, the same for every tile it crosses;
+ * js/engine/tunnels/rail-profiles.js makes it, js/engine/vector/pieces.js hands it on): sorted by line, then by s;
+ * a NaN height is a break (a bridge or a tunnel between two stretches on the ground). */
+typedef struct {
+  float line;             /* the line (as RoadPiece.line) */
+  float s;                /* metres along it */
+  float z;                /* its height there, metres (as the terrain's) */
+} ProfilePoint;
+
 /* What shaping did, for the performance panel and the tests. */
 typedef struct {
   u32 status;
@@ -125,9 +134,10 @@ u32 track_build(const QmMesh *m, const QmGround *G, const TrackPiece *tp, u32 co
 
 /*
  * Cuts roads, tracks, paths and railway beds into a parsed tile (shape.c).
- * `mu`, `mv`: metres per quantized unit east and north.
+ * `given`: lines' given profiles (ProfilePoint), or none. `mu`, `mv`: metres per quantized unit east and north.
  */
-u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, double mu, double mv, ShapeStats *st);
+u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *given, u32 givenCount,
+             double mu, double mv, ShapeStats *st);
 
 /* Metres per quantized unit east and north of a tile, at its middle. */
 void qm_unit_metres(double west, double south, double east, double north, double *mu, double *mv);

@@ -266,12 +266,13 @@ static void qm_tops(const QmMesh *m, u16 *tops) {
  *                     (QmGround, ground.c), or 0 for none
  * @param resOff       where to write the QmResult
  * @param tracksOff, trackCount  railway track to build over it (TrackPiece, track.c), or none
+ * @param profilesOff, profileCount  lines' given profiles (ProfilePoint, shape.c: Stage 5.18d), or none
  * Returns the status code, also stored in the result.
  */
 EXPORT u32 qm_decode(u32 srcOff, u32 srcLen,
                      double west, double south, double east, double north,
                      double skirtHeight, u32 roadsOff, u32 roadCount, u32 groundOff, u32 resOff,
-                     u32 tracksOff, u32 trackCount) {
+                     u32 tracksOff, u32 trackCount, u32 profilesOff, u32 profileCount) {
   QmResult *res = (QmResult *)PTR(resOff);
   memset(res, 0, sizeof(QmResult));
 
@@ -281,7 +282,8 @@ EXPORT u32 qm_decode(u32 srcOff, u32 srcLen,
   if (roadCount) {
     double mu, mv;
     qm_unit_metres(west, south, east, north, &mu, &mv);
-    status = qm_shape(&mesh, (const RoadPiece *)PTR(roadsOff), roadCount, mu, mv, &res->shape);
+    status = qm_shape(&mesh, (const RoadPiece *)PTR(roadsOff), roadCount, (const ProfilePoint *)PTR(profilesOff),
+                      profilesOff ? profileCount : 0, mu, mv, &res->shape);
     if (status != QM_OK) return (res->status = status);
   }
   /* Physics' index over the same triangles, from the same parse. */
