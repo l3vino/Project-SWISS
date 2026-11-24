@@ -46,7 +46,7 @@
 import { VIEW, hostOf } from '../../core/scheduler.js';
 import { geodeticToEcef } from '../../core/math.js';
 import { GroundPoints } from '../terrain/ground-points.js';
-import { TUBE_END, TUBE_POINT } from './groups.js';
+import { TUBE_END, TUBE_POINT, LINE_FLOATS, LINE_MOST } from './groups.js';
 import { placeOn } from './trace.js';
 import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, lookFor, LOOK, MATERIAL } from './sections.js';
 import { meshPoints, spineOf, middleAt, MESH_END, POINT_DOUBLES, HEAD_N, CUT_FOOT } from './mesh.js';
@@ -1128,6 +1128,31 @@ export class TunnelSet {
   }
 
   get bytes() { return this.gpuBytes; }
+
+  /**
+   * The railway tubes' lines within `within` metres of a point (5.18g, the console's swissgpu.lines): per tube, each
+   * spine sample there as its mesh runs (mesh.js spineOf: smoothed as the tracks are drawn on it) and as found
+   * (groups.js), with the tracks' offsets right of it (the spine's own 0 first; NaN where one does not run).
+   * @returns [{ key, length, ends, samples: [[s, lon, lat, lonRaw, latRaw, ...offsets]] }]
+   */
+  linesNear(lon, lat, within) {
+    const out = [], mLon = 111320 * Math.cos((lat * Math.PI) / 180);
+    for (const r of this.records.values()) {
+      const t = r.tube;
+      if (t.family !== 2 || !t.lines) continue;
+      const half = r.section?.half ?? 2.5, drawn = spineOf(t, half), p = t.points, L = t.lines;
+      const samples = [];
+      for (let k = 0, i = 0; k < p.length; k += TUBE_POINT, i++) {
+        if (Math.hypot((p[k] - lon) * mLon, (p[k + 1] - lat) * 111132) > within) continue;
+        const row = [Math.round(p[k + 2] * 10) / 10, drawn[k], drawn[k + 1], p[k], p[k + 1]];
+        const n = L[i * LINE_FLOATS];
+        for (let j = 0; j < Math.min(n, LINE_MOST); j++) row.push(Math.round(L[i * LINE_FLOATS + 1 + j] * 100) / 100);
+        samples.push(row);
+      }
+      if (samples.length) out.push({ key: t.key, length: Math.round(t.length), ends: t.ends.map((e) => [e.type, e.lon, e.lat]), samples });
+    }
+    return out;
+  }
 
   /**
    * The tubes for the probe, as plain data (render.js adds what only it knows: the bore the camera is in, what is

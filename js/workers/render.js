@@ -1304,6 +1304,46 @@ rpc.on('turn', ({ yaw, pitch }) => {
 });
 /* The camera now, for a view link and the console's view (5.18e): the stats' copy is up to half a second old. */
 rpc.on('view', () => (camera ? { camera: camera.state(), aboveGround: motionReport().aboveGround ?? null } : null));
+/*
+ * Every railway line near a point, inside the tubes and out in the open (5.18g, the console's swissgpu.lines: where a
+ * tube's tracks and the open track meet at a portal). The tubes' as the tunnels' thread has them (their spine as drawn
+ * and as found, each track's offset right of it); the open lines' points (the detail road tiles' railway lines, 5.18d
+ * vector/rails.js), each with its offset right of the nearest tube's drawn spine.
+ */
+rpc.on('lines', async ({ lon, lat, within = 60 }) => {
+  const tubes = (await tunnels.thread.request('lines', { lon, lat, within }, undefined, { timeout: 5000 }).catch(() => null)) ?? [];
+  const mLon = 111320 * Math.cos((lat * Math.PI) / 180), M = 111132;
+  const open = [];
+  for (const t of vector.tiles.values()) {
+    if (t.level !== 0 || !t.rails?.length) continue;
+    for (const { line, stretches } of t.rails) {
+      for (const p of stretches) {
+        for (let i = 0; i < p.length; i += 3) {
+          if (Math.hypot((p[i] - lon) * mLon, (p[i + 1] - lat) * M) > within) continue;
+          // The nearest drawn spine sample of any tube, and this point's offset right of it there.
+          let best = null, bestD = Infinity;
+          for (const tube of tubes) {
+            const S = tube.samples;
+            for (let k = 0; k < S.length; k++) {
+              const d = Math.hypot((S[k][1] - p[i]) * mLon, (S[k][2] - p[i + 1]) * M);
+              if (d < bestD) { bestD = d; best = { tube, k }; }
+            }
+          }
+          let across = null, s = null;
+          if (best) {
+            const S = best.tube.samples, a = S[Math.max(0, best.k - 1)], b = S[Math.min(S.length - 1, best.k + 1)];
+            const dx = (b[1] - a[1]) * mLon, dy = (b[2] - a[2]) * M, l = Math.hypot(dx, dy) || 1;
+            const qx = (p[i] - S[best.k][1]) * mLon, qy = (p[i + 1] - S[best.k][2]) * M;
+            across = Math.round(((qx * dy - qy * dx) / l) * 100) / 100;
+            s = S[best.k][0];
+          }
+          open.push({ line, lon: p[i], lat: p[i + 1], tube: best?.tube.key ?? null, s, across });
+        }
+      }
+    }
+  }
+  return { tubes, open };
+});
 
 /*
  * Put the walker on the ground at a place: the verification rig uses it, and

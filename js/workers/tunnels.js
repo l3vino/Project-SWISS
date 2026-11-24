@@ -12,7 +12,8 @@
  * bridges' decks as they come and go: portal floors on their own decks), 'track' (whether the open track is built in
  * 3D: a railway tube's bed as high as its, 5.18c), 'rails' (the detail tiles' railway lines as they come and go: their
  * profiles, engine/tunnels/rail-profiles.js, 5.18d), 'checks' (what its checks of the portals against the ground as
- * drawn found: portal-checks.js), 'report' (for the probe).
+ * drawn found: portal-checks.js), 'report' (for the probe), 'lines' (the railway tubes' lines near a point: the console's
+ * swissgpu.lines, 5.18g).
  * To it: 'mesh' (a request: a mesh's vertices and indices, transferred, its fields and the copy of its tube as placed;
  * answered once its buffers are on the GPU), 'mesh-unused', 'lists' (after every change: the meshes drawn in order,
  * the portals, the bores' meetings, the portal floors for the road tiles), 'profiles' (a road tile's railway lines'
@@ -136,6 +137,8 @@ rpc.on('decks', ({ added, removed, on }) => {
 });
 
 rpc.on('checks', ({ corrections }) => set?.applyChecks(corrections));
+
+rpc.on('lines', ({ lon, lat, within }) => (set ? set.linesNear(lon, lat, within) : []));
 
 rpc.on('report', () => (set ? { ...set.report(), rails: rails ? { ...rails.stats } : null, jobs: { ...scheduler.stats, active: scheduler.active } } : null));
 

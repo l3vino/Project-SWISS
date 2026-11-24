@@ -238,6 +238,9 @@ async function start() {
     look: (heading, tilt) => views.look(heading, tilt),
     view: () => views.view(),
     settled: (options) => views.settled(options),
+    // Every railway line within `within` metres of a point, in the tubes and in the open, with each one's offset right
+    // of the tube's spine (5.18g: where the tracks meet at a portal).
+    lines: (lon, lat, within = 60) => render.request('lines', { lon, lat, within }, undefined, { timeout: 8000 }),
   });
 
   const sendSize = () => render.send('resize', viewportSize());
