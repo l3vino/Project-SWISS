@@ -1,5 +1,5 @@
 {
- "build": "5.18g",
+ "build": "5.18h",
  "files": [
   "css/ui.css",
   "js/adapters/adapter.js",
@@ -90,6 +90,7 @@
   "js/engine/tunnels/cuts.js",
   "js/engine/tunnels/fit.js",
   "js/engine/tunnels/groups.js",
+  "js/engine/tunnels/junctions.js",
   "js/engine/tunnels/mesh.js",
   "js/engine/tunnels/placed.js",
   "js/engine/tunnels/portal-checks.js",

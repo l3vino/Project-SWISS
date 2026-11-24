@@ -53,6 +53,7 @@ import { meshPoints, spineOf, middleAt, boreWide, MESH_END, POINT_DOUBLES, HEAD_
 import { fitPoints, fitTube, SHORT, COLLAR_WIDTH } from './fit.js';
 import { boreCut, addAprons, boreMeets } from './cuts.js';
 import { placedCopy, wingOff, WING_SPLAY, WING_LEN } from './placed.js';
+import { railFloors, stationFloor, gradeLimit, steepest } from './junctions.js';
 
 const GATHER_MS = 400;
 /* A tube gone from the tiles round the camera (they moved: its open end with them) keeps being drawn until the
@@ -121,6 +122,8 @@ const JOIN_MATCH = 60, PORTAL_MATCH = 100;
 /* Metres a tube's line may pass a JOIN end of another and lend it its table entry (#joinedEntry, 5.18g); metres a
  * railway portal no track runs out of may lie from one that has one and take its floor (#twinPortal, 5.18g). */
 const PORTAL_TWIN = 60;
+/* Milliseconds at least between two makings of the railway network's floors (#railNetwork, 5.18h). */
+const RAIL_MS = 500;
 const JOIN_ENTRY = 25;
 const GROUNDS_MOST = 256;
 /* The Web Mercator zoom a mesh's positions on the map are in (the pass scales them to the photos'). */
@@ -178,6 +181,9 @@ export class TunnelSet {
     this.ground = new GroundPoints(terrain.sourceList, { most: GROUND_LEVEL, least: LEAST_LEVEL, tilesMost: GROUND_TILES_MOST,
       listsMost: GROUNDS_MOST, tries: GROUND_TRIES, againMs: GROUND_AGAIN_MS, stats: this.stats, label: 'tunnels' });
     this.eye = { lon: 0, lat: 0 };   // the camera, for the order of the jobs (#pick)
+    this.railNet = new Map();      // railway tube key → its floor's heights through junctions (#railNetwork, 5.18h)
+    this.railDirty = false;
+    this.railAt = 0;
     this.approaches = null;        // the runs' approach ends by cell (#approachOf), for one tunnelVersion
   }
 
@@ -220,6 +226,7 @@ export class TunnelSet {
     if (decks && decks.epoch !== this.deckEpoch) { this.deckEpoch = decks.epoch; this.#decksCame(); }
     for (const r of this.records.values()) { this.asking = r; this.#advance(r); }
     this.asking = null;
+    if (this.railDirty && now - this.railAt >= RAIL_MS) this.#railNetwork(now);
     if (this.retiring.length && this.retiring.some((r) => r.retireBy < now)) {
       this.retiring = this.retiring.filter((r) => {
         if (r.retireBy >= now) return true;
@@ -420,22 +427,9 @@ export class TunnelSet {
     let waiting = false;
     const byPortal = [false, false];
     for (let e = 0; e < 2; e++) {
-      const end = whole.ends[e];
-      // The near tube's own portal is the better placed (z14), where it is this end: the nearest within 60 m (a short
-      // tube's other portal may be as near); and where the whole tunnel's end is not a portal but the near tube comes
-      // out within PORTAL_MATCH of it, that portal (5.17t: the Ceneri base tunnel's west tube was traced to where its
-      // line meets the east one's 74 m inside the Vezia portal, and was never placed).
-      let mine = whole === near ? (end.type === TUBE_END.PORTAL ? near.ends[e] : null) : (end.type === TUBE_END.PORTAL ? end : null);
-      if (whole !== near) {
-        let nearest = end.type === TUBE_END.PORTAL ? 60 : PORTAL_MATCH;
-        for (const n of near.ends) if (n.type === TUBE_END.PORTAL && distance(n, end) < nearest) { nearest = distance(n, end); mine = n; }
-      }
-      if (!mine) continue;
-      // A railway portal no track runs out of (5.18g: the Ceneri base tunnel's west tube's line starts in the hillside
-      // 36 m from the east tube's portal, the nearest open track 37 m off: its floor from the hill, 5.9 m over the
-      // other's, and the crossover between them climbing 4.3%): the floor of the nearest railway portal within
-      // PORTAL_TWIN that has one, where the tracks really come out.
-      const g = this.#portalFloor(near.family === 2 && !this.#approachOf(mine) ? this.#twinPortal(mine) ?? mine : mine, near.family);
+      const p = this.#portalEnd(r, e);
+      if (!p) continue;
+      const { mine, g } = p;
       byPortal[e] = g.state !== 'failed';
       // (And how far the road in front as drawn has moved it: alignPortals.)
       if (g.state === 'done') heights[e] = g.height + (this.lifts.get(portalKey(mine, near.family)) ?? 0);
@@ -472,14 +466,18 @@ export class TunnelSet {
     // 3. The floor by its portals.
     const length = whole.length;
     const pa = whole.points, pb = whole.points.length - TUBE_POINT;
-    const floor = floorProfile(length, heights[0], heights[1], r.entry, pa[1], pa[pb + 1]);
+    // (A railway tube others open into: through the heights at those points too, junctions.js.)
+    const net = near.family === 2 ? this.railNet.get(near.key) : null;
+    const floor = net?.stations.length ? stationFloor(length, heights, net.stations)
+      : floorProfile(length, heights[0], heights[1], r.entry, pa[1], pa[pb + 1]);
     if (!floor) { r.unplaced = true; r.settled = !open.length || r.traced; return; }
     r.unplaced = false;
     // (And where the ground as cut has its tubes start at most: trimStarts.)
     const starts = near.ends.map((n) => (n.type === TUBE_END.PORTAL ? this.starts.get(portalKey(n, near.family)) : undefined));
-    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}`;
+    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}`;
     if (sig === r.sig || r.meshBusy) return;
     r.sig = sig;
+    if (near.family === 2) this.railDirty = true;
     const at = r.wholeAt ?? { s0: 0, sign: 1 };
     r.baseAt = (s) => floor(at.s0 + at.sign * s);
     // 4. Fitted to the ground: its section where it is shallow, its portals' faces, its floor kept under the ground;
@@ -530,6 +528,66 @@ export class TunnelSet {
       if (q.skipped || !q.section || !q.fitFloor) continue;
       this.#joinTo(r, q);
       this.#joinTo(q, r);
+    }
+  }
+
+  /* Record r's whole tunnel's end e as a portal, and its floor's ground (#portalFloor), or null where it is none. The
+   * near tube's own portal is the better placed (z14), where it is this end: the nearest within 60 m (a short tube's
+   * other portal may be as near); and where the whole tunnel's end is not a portal but the near tube comes out within
+   * PORTAL_MATCH of it, that portal (5.17t: the Ceneri base tunnel's west tube was traced to where its line meets the
+   * east one's 74 m inside the Vezia portal, and was never placed). A railway portal no track runs out of takes the
+   * floor of the nearest railway portal within PORTAL_TWIN that has one (#twinPortal, 5.18g). */
+  #portalEnd(r, e) {
+    const near = r.tube, whole = r.whole ?? near, end = whole.ends[e];
+    let mine = whole === near ? (end.type === TUBE_END.PORTAL ? near.ends[e] : null) : (end.type === TUBE_END.PORTAL ? end : null);
+    if (whole !== near) {
+      let nearest = end.type === TUBE_END.PORTAL ? 60 : PORTAL_MATCH;
+      for (const n of near.ends) if (n.type === TUBE_END.PORTAL && distance(n, end) < nearest) { nearest = distance(n, end); mine = n; }
+    }
+    if (!mine) return null;
+    const g = this.#portalFloor(near.family === 2 && !this.#approachOf(mine) ? this.#twinPortal(mine) ?? mine : mine, near.family);
+    return { mine, g };
+  }
+
+  /* ---- railway floors through junctions (5.18h, junctions.js) ------------------------------------------------------
+   * The railway tubes joined to each other: their portals' floors fixed, every point where one opens into another a
+   * station of that one, the heights between spread so the grades are even (railFloors). Made again (at most every
+   * RAIL_MS) once a railway tube was placed or changed; a tube whose stations moved is placed again. */
+  #railNetwork(now) {
+    this.railDirty = false;
+    this.railAt = now;
+    const tubes = [], links = [];
+    const rails = [...this.records.values()].filter((r) => r.tube.family === 2 && !r.dropped);
+    for (const r of rails) {
+      const fixed = [NaN, NaN];
+      for (let e = 0; e < 2; e++) {
+        const p = this.#portalEnd(r, e);
+        if (p?.g.state === 'done') fixed[e] = p.g.height + (this.lifts.get(portalKey(p.mine, 2)) ?? 0);
+      }
+      tubes.push({ key: r.tube.key, length: (r.whole ?? r.tube).length, fixed });
+    }
+    for (const q of rails) {
+      const whole = q.whole ?? q.tube;
+      for (let e = 0; e < 2; e++) {
+        const we = whole.ends[e];
+        if (we.type !== TUBE_END.JOIN) continue;
+        // (Its near tube's own JOIN end there first: groups.js runs it JOIN_INTO back into the bore it opens into.)
+        const ne = q.tube.ends.find((n) => n.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH) ?? we;
+        for (const r of rails) {
+          if (r === q || !r.section) continue;
+          const at = this.#inBoreOf(r, ne.lon, ne.lat);
+          if (!at) continue;
+          const w = r.wholeAt ?? { s0: 0, sign: 1 };
+          links.push({ from: q.tube.key, end: e, to: r.tube.key, s: w.s0 + w.sign * at.s });
+          break;
+        }
+      }
+    }
+    this.railNet = railFloors(tubes, links);
+    for (const r of rails) {
+      const n = this.railNet.get(r.tube.key);
+      const sig = n?.stations.length ? n.stations.map(([s, h]) => s.toFixed(0) + ':' + h.toFixed(2)).join(',') : '';
+      if (sig !== (r.railSig ?? '')) { r.railSig = sig; r.settled = false; }
     }
   }
 
@@ -1218,6 +1276,8 @@ export class TunnelSet {
       profile: r.floorAt ? floorSamples(r) : null,
       // Its line, [lon, lat, s] at most every 25 m and 60 of them (5.17n: the live checks place cameras along it).
       line: lineSamples(r.tube),
+      // A railway's steepest grade and its limit (5.18h, junctions.js gradeLimit): over it, flagged.
+      grade: r.tube.family === 2 && r.floorAt ? gradeOf(r) : null,
       places: r.tube.tracks > 1 || (r.tube.lines && r.tube.lines[0] > 1) ? placesOf(r.tube) : null,
       mesh: r.mesh ? { id: r.mesh.id, triangles: r.mesh.indexCount / 3, bytes: r.mesh.bytes, radius: Math.round(r.mesh.radius),
         look: r.mesh.look, flags: r.mesh.flags, aprons: r.mesh.cut?.aprons?.length ?? 0 } : null,
@@ -1284,6 +1344,12 @@ function placesOf(tube) {
     if (first >= 0) out.push({ from: Math.round(first), to: Math.round(last), least: Math.round(least * 10) / 10, at });
   }
   return out;
+}
+
+/* A railway tube's steepest grade over its length and its limit (the probe, 5.18h). */
+function gradeOf(r) {
+  const most = steepest(r.floorAt, r.tube.length), limit = gradeLimit(r.kind, r.entry);
+  return { steepest: Math.round(most * 10000) / 100, limit: Number.isFinite(limit) ? limit * 100 : null, over: most > limit + 1e-4 };
 }
 
 /* A near tube's end as its mesh finishes it. */

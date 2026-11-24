@@ -2496,6 +2496,36 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (problems.length) process.exitCode = 1;
 }
 
+/* ---- 17d. railway floors through junctions (engine/tunnels/junctions.js, 5.18h): the Ceneri base tunnel's north end
+ * as measured, the east tube's portal floor 216.23 m, the west tube's 222.11 m (its viaduct), the 138 m crossover
+ * between them opening into the east one 204 m in and the west one 321 m in: the 5.9 m shared out, every grade the
+ * same and under AlpTransit's 1.25%, not 4.3% on the crossover alone. */
+{
+  const { railFloors, stationFloor, gradeLimit, steepest } = await import('../js/engine/tunnels/junctions.js');
+  const problems = [];
+  const net = railFloors([
+    { key: 'east', length: 6000, fixed: [216.23, NaN] },
+    { key: 'west', length: 519, fixed: [222.11, NaN] },
+    { key: 'cross', length: 138, fixed: [NaN, NaN] },
+  ], [{ from: 'cross', end: 0, to: 'east', s: 204 }, { from: 'cross', end: 1, to: 'west', s: 321 }]);
+  const east = net.get('east'), west = net.get('west'), cross = net.get('cross');
+  const j1 = east?.stations[0]?.[1], j2 = west?.stations[0]?.[1];
+  const gCross = Math.abs(cross.ends[1] - cross.ends[0]) / 138, gWest = Math.abs(222.11 - j2) / 321, gEast = Math.abs(j1 - 216.23) / 204;
+  if (!(Math.abs(cross.ends[0] - j1) < 1e-6 && Math.abs(cross.ends[1] - j2) < 1e-6)) problems.push('the crossover\'s ends are not the stations');
+  if (!(Math.max(gCross, gWest, gEast) < 0.0125)) problems.push(`grades ${[gEast, gCross, gWest].map((g) => (g * 100).toFixed(2)).join('/')}%`);
+  if (!(Math.max(gCross, gWest, gEast) - Math.min(gCross, gWest, gEast) < 0.0005)) problems.push('the grades are not even');
+  // The east tube on beyond its junction, nothing fixed there: level.
+  if (!(Math.abs(east.ends[1] - j1) < 0.01)) problems.push(`the east tube's far end ${east.ends[1]?.toFixed(2)} (its junction ${j1?.toFixed(2)})`);
+  // A network with nothing fixed: no floors from it.
+  if (railFloors([{ key: 'a', length: 100, fixed: [NaN, NaN] }], []).size) problems.push('a network with nothing fixed was given floors');
+  const floor = stationFloor(519, [222.11, NaN], west.stations);
+  const steep = steepest(floor, 519, 1);
+  if (!(Math.abs(floor(321) - j2) < 1e-6 && Math.abs(floor(519) - j2) < 1e-6 && steep < 0.0125)) problems.push('the west tube\'s floor through its station');
+  if (gradeLimit({ id: 'rack' }, null) !== Infinity || gradeLimit({ id: 'rail' }, { section: 'tube' }) !== 0.0125 || gradeLimit({ id: 'rail' }, null) !== 0.025) problems.push('the grade limits');
+  console.log(`railway floors through junctions: the Ceneri crossover's junctions at ${j1?.toFixed(2)} and ${j2?.toFixed(2)} m, grades east ${(gEast * 100).toFixed(2)}%, crossover ${(gCross * 100).toFixed(2)}%, west ${(gWest * 100).toFixed(2)}% (4.3% on the crossover alone before) — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  if (problems.length) process.exitCode = 1;
+}
+
 /* ---- 17b. every module links (tools/linkcheck.mjs, 5.19a): a name imported that another module no longer exports
  * stops the thread that loads it from starting. */
 {
