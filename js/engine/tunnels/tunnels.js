@@ -182,15 +182,19 @@ export class TunnelSet {
     if (!on) { this.client.cancelAll(); this.#clear(); this.seenVersion = -1; }
   }
 
-  /** How much is still to do now (the console's swissgpu.settled waits for none of it, 5.18e): the tubes being found,
-   *  and each tube whose mesh, trace or ground is being made or waited for (one to be tried again later is not). */
-  pending(now = performance.now()) {
-    let n = this.tubesWanted || this.tubesBusy ? 1 : 0;
+  /** What can start now (the console's swissgpu.settled waits for none of it, 5.18e; the jobs out the scheduler
+   *  counts): the tubes to find, and per tube not settled its mesh, its trace or a ground tile it waits for (one to be
+   *  tried again later is not). Into `why` by kind. */
+  pending(now = performance.now(), why = { tubes: 0, mesh: 0, trace: 0, ground: 0 }) {
+    why.tubes = this.tubesWanted || this.tubesBusy ? 1 : 0;
+    why.mesh = why.trace = why.ground = 0;
     for (const r of this.records.values()) {
-      if (r.meshBusy || r.traceBusy || r.traceWanted || (r.meshWanted && !(r.meshAgainAt > now)) ||
-        r.grounds?.some((g) => g.state === 'tiles')) n++;
+      if (r.settled) continue;
+      if (r.meshWanted && !(r.meshAgainAt > now)) why.mesh++;
+      else if (r.traceWanted) why.trace++;
+      else if (r.grounds?.some((g) => g.state === 'tiles' && g.tiles.some((t) => t.state === 'wanted'))) why.ground++;
     }
-    return n;
+    return why.tubes + why.mesh + why.trace + why.ground;
   }
 
   /** Whether the open track is built in 3D (the setting): a railway tube's bed then stands as high as its (5.18c),

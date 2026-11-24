@@ -1704,7 +1704,7 @@ function startReporting() {
       vector: vector.stats,
       tunnels: { ...tunnels.stats, enabled: tunnels.enabled, bytes: tunnels.bytes, portals: tunnels.portals.length,
         drawn: tunnelsPass?.draws.length ?? 0, triangles: Math.round(tunnelsPass?.triangles ?? 0), inside: tunnels.meshes.some((m) => m.inside),
-        busy: tunnels.busy },
+        busy: tunnels.busy, busyWhy: tunnels.busyWhy },
       buildings: buildingStats(),
       requests: requestStats(),
       groundTiles: ground.entries.size,

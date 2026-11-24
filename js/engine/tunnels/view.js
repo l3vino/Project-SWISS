@@ -42,6 +42,7 @@ export class TunnelView {
     this.meets = [];               // per cut, the other bores reaching into it (cuts.js boreMeets)
     this.stats = { tubes: 0, meshes: 0 };
     this.busy = 0;                 // the work the thread still has to do (5.18e: the console's settled waits for none)
+    this.busyWhy = null;           // and of what kinds
     this.bytes = 0;
     this.byId = new Map();         // mesh id → mesh with its buffers (listed, or about to be)
     this.query = new TubeQuery();
@@ -56,7 +57,7 @@ export class TunnelView {
     thread.on('lists', (lists) => this.#lists(lists));
     // The railways' profiles made there (5.18d): the terrain is cut along them (vector/tiles.js setProfiles).
     thread.on('profiles', ({ key, lines }) => this.vector.setProfiles(key, lines));
-    thread.on('busy', ({ n }) => { this.busy = n; });
+    thread.on('busy', ({ n, why }) => { this.busy = n; this.busyWhy = why; });
   }
 
   setEnabled(on) {

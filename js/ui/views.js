@@ -14,8 +14,6 @@ const DEG = Math.PI / 180;
 const STILL = 2;
 /* Stats in a row with nothing loading and nothing arriving: the view is as it will stay (settled). */
 const QUIET = 3;
-/* Metres the ground found exactly may differ from the guess a camera was placed over before it is placed again. */
-const REPLACE = 0.05;
 /* A view placed before what is round it loaded (a tunnel's tube: until it is known, the ground over it holds the camera
  * up): placed again once it has, if the camera stands more than PUSHED metres off it but within ASIDE metres of it
  * across (pushed up or down, not walked away). */
@@ -60,7 +58,7 @@ export class Views {
     const busy = loadingOf(stats), quiet = !Object.values(busy).some((n) => n > 0);
     for (const w of this.waiters) {
       w.quiet = quiet ? w.quiet + 1 : 0;
-      w.busy = busy;
+      w.busy = { ...busy, tunnelsWhy: stats.tunnels?.busyWhy ?? null };
       if (w.quiet >= QUIET) w.done(true);
     }
   }
@@ -110,13 +108,15 @@ export class Views {
         if (across <= ASIDE && Math.abs(c.height - view.height) > PUSHED) this.#place(view.lon, view.lat, view.height, turn);
       }
     } else if (view.above !== undefined) {
-      const b = await this.render.request('bounds', { lon: view.lon, lat: view.lat, radius: 0 }, undefined, { timeout: 2000 });
-      const guess = b.exactGround ?? b.estimate ?? b.terrain ?? 0;
-      this.#place(view.lon, view.lat, guess + view.above, turn);
+      // Stood there first (render.js spawn: the tiles under it asked for at once, settled onto the ground once it is
+      // known; a guess over ground not loaded can be a mountain top away), then as high over it as asked.
+      this.render.send('spawn', { lon: view.lon, lat: view.lat, label: `${view.lat.toFixed(5)}, ${view.lon.toFixed(5)}` });
       if (settle) {
         await this.settled({ timeout });
         const [exact] = await this.render.request('ground', { points: [[view.lon, view.lat]] }, undefined, { timeout: 2000 });
-        if (Number.isFinite(exact) && Math.abs(exact - guess) > REPLACE) this.#place(view.lon, view.lat, exact + view.above, turn);
+        const { camera: c, aboveGround } = await this.render.request('view', null, undefined, { timeout: 2000 });
+        const ground = Number.isFinite(exact) ? exact : c.height - (aboveGround ?? 0);
+        this.#place(view.lon, view.lat, ground + view.above, turn);
       }
     } else {
       this.render.send('flyto', { lon: view.lon, lat: view.lat, elevation: null, label: `${view.lat.toFixed(5)}, ${view.lon.toFixed(5)}`, instant: true });

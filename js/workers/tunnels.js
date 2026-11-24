@@ -42,7 +42,7 @@ const rpc = new Endpoint(self, 'tunnels');
 const ctx = { core: null };
 let set = null, rails = null, scheduler = null, ticking = 0;
 let listsDue = null;     // the latest lists, sent at the end of the turn (one message for many changes)
-const busy = { sent: -1, at: 0 };   // the work still to do last sent, and when
+const busy = { sent: -1, at: 0, why: { tubes: 0, mesh: 0, trace: 0, ground: 0 } };   // the work still to do last sent, when
 let trackOn = true;      // the open track in 3D (the setting; kept for a set made after it came)
 const railsEarly = [];   // road tiles' railway lines sent before the thread was ready
 const camera = { lon: 0, lat: 0 };
@@ -99,9 +99,13 @@ function tick() {
   // (A mesh in them has its buffers on the render thread already: it was answered before it was set.)
   if (listsDue) { rpc.send('lists', listsDue); listsDue = null; }
   // How much is still to do (5.18e: the console's swissgpu.settled waits for none), when it changes.
-  const now = performance.now();
-  const n = scheduler.active + (set?.enabled ? set.pending(now) : 0) + (rails?.pending ?? 0);
-  if (n !== busy.sent && (n === 0 || now - busy.at >= BUSY_MS)) { busy.sent = n; busy.at = now; rpc.send('busy', { n }); }
+  const now = performance.now(), why = busy.why;
+  const tubes = set?.enabled ? set.pending(now, why) : 0, profiles = rails?.pending ?? 0;
+  const n = scheduler.active + tubes + profiles;
+  if (n !== busy.sent && (n === 0 || now - busy.at >= BUSY_MS)) {
+    busy.sent = n; busy.at = now;
+    rpc.send('busy', { n, why: { ...why, jobs: scheduler.active, profiles } });
+  }
 }
 
 rpc.on('enabled', ({ on }) => set?.setEnabled(on));
