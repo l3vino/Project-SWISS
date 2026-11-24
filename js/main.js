@@ -38,6 +38,7 @@ let flying = false;   // in the airplane (the crosshair is its pointer)
 const live = { camera: null, view: null, info: null };
 let perf = null;
 let views = null;   // the view as a link and the camera at a command (ui/views.js, 5.18e)
+let startLink = ''; // the view link started from, kept to once what is round it has loaded
 
 start().catch((err) => {
   console.error(err);
@@ -216,6 +217,9 @@ async function start() {
 
   buildReadout(info);
   wireInterface(render, canvasEl);
+  // Started from a view link: placed there again once it has loaded, if the ground held the camera off it meanwhile
+  // (a tunnel's tube not known yet).
+  if (startLink) views.go(startLink).catch(() => {});
 
   // A handle for the browser console and the verification rig:
   // swissgpu.probe() shows the physics state now, swissgpu.send() drives it.
@@ -260,7 +264,7 @@ async function start() {
 function startingCamera() {
   // A view link opened (5.18e: the address bar keeps one, so a reload comes back to it too).
   const linked = Views.startFrom(registry);
-  if (linked) return linked;
+  if (linked) { startLink = location.hash; return linked; }
   if (settings.get('spawn') === 'last') {
     const saved = session.camera(registry);
     if (saved) return saved;
@@ -350,7 +354,7 @@ function wireInterface(render, canvasEl) {
       // once. The pick is a click or Enter, a user gesture, so the mouse can
       // go straight back to the camera. A view link pasted (5.18e): there at
       // once, looking as it was.
-      if (place.view) views.go(place.view, { settle: false });
+      if (place.view) views.go(place.view).catch((err) => toast.show(err.message));
       else {
         render.send('flyto', {
           lon: place.lon, lat: place.lat,

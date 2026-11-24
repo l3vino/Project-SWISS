@@ -16,6 +16,11 @@ const STILL = 2;
 const QUIET = 3;
 /* Metres the ground found exactly may differ from the guess a camera was placed over before it is placed again. */
 const REPLACE = 0.05;
+/* A view placed before what is round it loaded (a tunnel's tube: until it is known, the ground over it holds the camera
+ * up): placed again once it has, if the camera stands more than PUSHED metres off it but within ASIDE metres of it
+ * across (pushed up or down, not walked away). */
+const PUSHED = 0.3, ASIDE = 1;
+const M_LAT = 111132;
 
 export class Views {
   /**
@@ -30,7 +35,7 @@ export class Views {
     this.waiters = new Set();  // settled() calls waiting
     addEventListener('hashchange', () => {
       const view = parseView(location.hash);
-      if (view) this.go(view, { settle: false });
+      if (view) this.go(view).catch(() => {});
     });
   }
 
@@ -98,6 +103,12 @@ export class Views {
     const turn = { yaw: view.yaw, pitch: view.pitch, mode: view.mode };
     if (view.height !== undefined) {
       this.#place(view.lon, view.lat, view.height, turn);
+      if (settle) {
+        await this.settled({ timeout });
+        const { camera: c } = await this.render.request('view', null, undefined, { timeout: 2000 });
+        const across = Math.hypot((c.lon - view.lon) * M_LAT * Math.cos((view.lat * Math.PI) / 180), (c.lat - view.lat) * M_LAT);
+        if (across <= ASIDE && Math.abs(c.height - view.height) > PUSHED) this.#place(view.lon, view.lat, view.height, turn);
+      }
     } else if (view.above !== undefined) {
       const b = await this.render.request('bounds', { lon: view.lon, lat: view.lat, radius: 0 }, undefined, { timeout: 2000 });
       const guess = b.exactGround ?? b.estimate ?? b.terrain ?? 0;
