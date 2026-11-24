@@ -466,8 +466,10 @@ export class TunnelSet {
     // 3. The floor by its portals.
     const length = whole.length;
     const pa = whole.points, pb = whole.points.length - TUBE_POINT;
-    // (A railway tube others open into: through the heights at those points too, junctions.js.)
+    // (A railway tube in a network of them: its JOIN ends at the heights the network gives there, and through the
+    // points where others open into it too, junctions.js.)
     const net = near.family === 2 ? this.railNet.get(near.key) : null;
+    if (net) for (let e = 0; e < 2; e++) if (whole.ends[e].type === TUBE_END.JOIN && !byPortal[e] && Number.isFinite(net.ends[e])) heights[e] = net.ends[e];
     const floor = net?.stations.length ? stationFloor(length, heights, net.stations)
       : floorProfile(length, heights[0], heights[1], r.entry, pa[1], pa[pb + 1]);
     if (!floor) { r.unplaced = true; r.settled = !open.length || r.traced; return; }
@@ -586,7 +588,9 @@ export class TunnelSet {
     this.railNet = railFloors(tubes, links);
     for (const r of rails) {
       const n = this.railNet.get(r.tube.key);
-      const sig = n?.stations.length ? n.stations.map(([s, h]) => s.toFixed(0) + ':' + h.toFixed(2)).join(',') : '';
+      const whole = r.whole ?? r.tube;
+      const joins = n ? [0, 1].filter((e) => whole.ends[e].type === TUBE_END.JOIN && Number.isFinite(n.ends[e])).map((e) => e + '=' + n.ends[e].toFixed(2)) : [];
+      const sig = [...(n?.stations ?? []).map(([s, h]) => s.toFixed(0) + ':' + h.toFixed(2)), ...joins].join(',');
       if (sig !== (r.railSig ?? '')) { r.railSig = sig; r.settled = false; }
     }
   }
@@ -1278,6 +1282,7 @@ export class TunnelSet {
       line: lineSamples(r.tube),
       // A railway's steepest grade and its limit (5.18h, junctions.js gradeLimit): over it, flagged.
       grade: r.tube.family === 2 && r.floorAt ? gradeOf(r) : null,
+      rail: r.railSig || null,
       places: r.tube.tracks > 1 || (r.tube.lines && r.tube.lines[0] > 1) ? placesOf(r.tube) : null,
       mesh: r.mesh ? { id: r.mesh.id, triangles: r.mesh.indexCount / 3, bytes: r.mesh.bytes, radius: Math.round(r.mesh.radius),
         look: r.mesh.look, flags: r.mesh.flags, aprons: r.mesh.cut?.aprons?.length ?? 0 } : null,
