@@ -118,7 +118,9 @@ const JOIN_NEAR = 1, JOIN_EASE = 40;
 /* Metres a near tube's JOIN end and its whole tunnel's may lie apart and be the same (5.17t: by Giubiasco 23 m), and
  * its portal and a whole tunnel's end that is not one (at Vezia 74 m). */
 const JOIN_MATCH = 60, PORTAL_MATCH = 100;
-/* Metres a tube's line may pass a JOIN end of another and lend it its table entry (#joinedEntry, 5.18g). */
+/* Metres a tube's line may pass a JOIN end of another and lend it its table entry (#joinedEntry, 5.18g); metres a
+ * railway portal no track runs out of may lie from one that has one and take its floor (#twinPortal, 5.18g). */
+const PORTAL_TWIN = 60;
 const JOIN_ENTRY = 25;
 const GROUNDS_MOST = 256;
 /* The Web Mercator zoom a mesh's positions on the map are in (the pass scales them to the photos'). */
@@ -429,7 +431,11 @@ export class TunnelSet {
         for (const n of near.ends) if (n.type === TUBE_END.PORTAL && distance(n, end) < nearest) { nearest = distance(n, end); mine = n; }
       }
       if (!mine) continue;
-      const g = this.#portalFloor(mine, near.family);
+      // A railway portal no track runs out of (5.18g: the Ceneri base tunnel's west tube's line starts in the hillside
+      // 36 m from the east tube's portal, the nearest open track 37 m off: its floor from the hill, 5.9 m over the
+      // other's, and the crossover between them climbing 4.3%): the floor of the nearest railway portal within
+      // PORTAL_TWIN that has one, where the tracks really come out.
+      const g = this.#portalFloor(near.family === 2 && !this.#approachOf(mine) ? this.#twinPortal(mine) ?? mine : mine, near.family);
       byPortal[e] = g.state !== 'failed';
       // (And how far the road in front as drawn has moved it: alignPortals.)
       if (g.state === 'done') heights[e] = g.height + (this.lifts.get(portalKey(mine, near.family)) ?? 0);
@@ -454,7 +460,7 @@ export class TunnelSet {
     // The near tube's own portals' approaches (their rise outwards: the ground out of a portal is held against it).
     const slopes = near.ends.map((n) => {
       if (n.type !== TUBE_END.PORTAL) return 0;
-      const g = this.#portalFloor(n, near.family);
+      const g = this.#portalFloor(near.family === 2 && !this.#approachOf(n) ? this.#twinPortal(n) ?? n : n, near.family);
       if (g.state === 'tiles') waiting = true;
       return g.slope ?? 0;
     });
@@ -525,6 +531,21 @@ export class TunnelSet {
       this.#joinTo(r, q);
       this.#joinTo(q, r);
     }
+  }
+
+  /* The railway portal nearest a portal end, within PORTAL_TWIN metres, that a track runs out of (#approachOf), or
+   * null (5.18g). */
+  #twinPortal(end) {
+    let best = null, bestD = PORTAL_TWIN;
+    for (const q of this.records.values()) {
+      if (q.tube.family !== 2) continue;
+      for (const e of q.tube.ends) {
+        if (e.type !== TUBE_END.PORTAL || e === end) continue;
+        const d = distance(e, end);
+        if (d < bestD && this.#approachOf(e)) { best = e; bestD = d; }
+      }
+    }
+    return best;
   }
 
   /* The table entry of a tube one of record r's JOIN ends opens into (5.18g), or null: the first with one whose line
