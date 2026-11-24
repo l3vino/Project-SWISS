@@ -116,6 +116,9 @@ const CROSS_ROCK = 2.5, CROSS_GRADE = 0.06, CROSS_CLEAR = 15, CROSS_LEAST = 10;
 /* Where a tube opens into another (#joins, 5.17m: a JOIN end inside the other's bore, within JOIN_NEAR metres of its
  * walls): its floor eases to the other's there over JOIN_EASE metres (half its length at most), as a dip does. */
 const JOIN_NEAR = 1, JOIN_EASE = 40;
+/* Metres from a JOIN end within which a tube's line crossing another of its family's is where it opens into that one,
+ * not a crossing (#crossings, 5.18h). */
+const JOIN_CROSS = 60;
 /* Metres a near tube's JOIN end and its whole tunnel's may lie apart and be the same (5.17t: by Giubiasco 23 m), and
  * its portal and a whole tunnel's end that is not one (at Vezia 74 m). */
 const JOIN_MATCH = 60, PORTAL_MATCH = 100;
@@ -719,6 +722,14 @@ export class TunnelSet {
       if (boxA[0] > boxB[2] || boxB[0] > boxA[2] || boxA[1] > boxB[3] || boxB[1] > boxA[3]) continue;
       const x = crossingOf(a.points, b.points);
       if (!x) continue;
+      // Lines of one family crossing by a JOIN end are where one opens into the other, not two tunnels crossing (5.18h:
+      // the Ceneri base tunnel's west tube crossed the line of the one it opens into 17 m from its end, and dipped 9.8 m
+      // under it, a 4.7% ramp): they share their room there (#joins).
+      if (a.family === b.family && (byJoin(a, x.sa) || byJoin(b, x.sb))) {
+        this.#setDip(r, q.tube.key, null);
+        this.#setDip(q, r.tube.key, null);
+        continue;
+      }
       const fa = r.fitFloor(x.sa), fb = q.fitFloor(x.sb);
       const layered = a.layer !== b.layer && Number.isFinite(a.layer) && Number.isFinite(b.layer);
       const aLower = layered ? a.layer < b.layer : fa <= fb;
@@ -1468,6 +1479,11 @@ function withJoins(r) {
     }
     return h;
   };
+}
+
+/* Whether `s` metres along a tube lie within JOIN_CROSS of one of its JOIN ends (#crossings). */
+function byJoin(tube, s) {
+  return (tube.ends[0].type === TUBE_END.JOIN && s <= JOIN_CROSS) || (tube.ends[1].type === TUBE_END.JOIN && s >= tube.length - JOIN_CROSS);
 }
 
 /* Where two tube lines cross: metres along each ({ sa, sb }), or null (the first crossing found: two tunnels cross
