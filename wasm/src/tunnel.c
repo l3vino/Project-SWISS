@@ -474,6 +474,7 @@ static void span_of(Span *S, const Ring *rings, u32 nring, u32 end, double len) 
 #define TRACK_EDGE 1.5
 #define BED_HALF 1.4
 #define BED_NONE 9.0        /* a bed's neighbour where there is none: farther than its sleepers reach */
+#define MERGED 0.25         /* metres two tracks' middles may be apart and be one (a switch's points: rails()) */
 #define FAN_R 0.56          /* a jet fan: 1.1 m across, 4 m long */
 #define FAN_HALF 2.0
 #define FAN_UNDER 0.35      /* metres between a fan and the vault over it */
@@ -632,6 +633,12 @@ static void rails(Out *o, const Ring *rings, u32 nring, double gauge, u32 end0, 
     const double top = foot + (flush ? 0.004 : RAIL_HIGH);
     /* (A track not running here keeps its vertices, at the line, unjoined: each keeps its place in the ring.) */
     for (u32 t = 0; t < n; t++) { has[t] = at[t] == at[t]; if (!has[t]) at[t] = 0.0; }
+    /* At a switch's points two lines are one track (5.18g: the Ceneri base tunnel's east line runs into the main one
+     * over 100 m, and the last metres of it drew its rails and bed a hand's width from the other's, fighting for the
+     * same pixels): a track within MERGED of an earlier one in the ring (the spine's own first) is that one's there. */
+    for (u32 t = 1; t < n; t++) {
+      for (u32 u = 0; u < t && has[t]; u++) if (has[u] && m_abs(at[t] - at[u]) < MERGED) has[t] = 0;
+    }
     for (u32 t = 0; t < n; t++) {
       for (int side = -1; side <= 1; side += 2) {
         const double c = at[t] + side * (gauge + RAIL_HEAD);
