@@ -494,7 +494,7 @@ fn tFloor(in : VSOut, p : TPx, dmx : vec2f, dmy : vec2f, grain : f32) -> vec3f {
   if (tube.look == LOOK_RAIL) { return tRailFloor(p, in.ah.x, grain); }
   if (tube.look == LOOK_FOOT) { return tFootFloor(p, grain); }
   if (tube.look == LOOK_ROCK) {
-    return vectorRoads(in.merc, dmx, dmy, VT_GRAVEL_RGB * (1.0 + 0.5 * grain), vec2f(1.0, 0.0), vec4f(0.0), VT_IN_TUNNEL);
+    return vectorRoads(in.merc, dmx, dmy, VT_GRAVEL_RGB * (1.0 + 0.5 * grain), vec2f(1.0, 0.0), vec4f(0.0), VT_IN_TUNNEL, vec3f(0.0));
   }
   // A road tunnel's floor between its kerbs is its road: asphalt, its aggregate's grain (5.17p: the data's lines kink).
   let q = vec2f(p.s, in.ah.x);

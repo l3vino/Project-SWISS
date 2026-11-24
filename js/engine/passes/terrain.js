@@ -206,7 +206,9 @@ export class TerrainPass {
         d[o + 14] = m.c;
       }
       // The bores reaching it (5.17k), in a slot of its own; else 5.17d's openings at the portals.
+      const c0 = cuts ? performance.now() : 0;
       const segs = cuts && slots < CUT_SLOTS ? this.#cutsOf(t, tunnels, p) : null;
+      if (cuts) this.cutMs += performance.now() - c0;
       this.cutSlots[i] = 0;
       if (segs) {
         this.#fillSlot(slots, t, segs);
@@ -296,9 +298,7 @@ export class TerrainPass {
       const near = cutsNear(tunnels.cuts, f, f.lo, f.size, this.nearCuts);
       if (c && c.frame === f && sameList(c.near, near)) c.version = tunnels.cutVersion;
       else {
-        const t0 = performance.now();
         const out = cutsInFrame(near, f, f.lo, f.size, true);
-        this.cutMs += performance.now() - t0;
         c = t.cut = { version: tunnels.cutVersion, frame: f, near: near.slice(), data: out.length ? Float32Array.from(out) : null, id: ++cutIds, sortedAt: null, ...cutsReach(out) };
       }
     }

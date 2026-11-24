@@ -299,7 +299,7 @@ fn shade(in : VSOut, dmx : vec2f, dmy : vec2f, under : bool, facet : vec3f, apro
     // The open approach in front of a tube (5.17n): the photo there shows the hillside over the real portal; its floor
     // as the tube's, ballast, the tunnel's own roads and tracks on it (vector.wgsl, as in the tube).
     let grain = vtNoise(in.merc * 1.5 + vec2f(1024.0), 65536u) - 0.5;
-    albedo = vectorRoads(in.merc, dmx, dmy, APRON_RGB * (1.0 + 0.5 * grain), vec2f(1.0, 0.0), vec4f(0.0), VT_APRON);
+    albedo = vectorRoads(in.merc, dmx, dmy, APRON_RGB * (1.0 + 0.5 * grain), vec2f(1.0, 0.0), vec4f(0.0), VT_APRON, vec3f(0.0));
     light = mix(modelled, photoLight(n), photo.found);
   } else {
     albedo = mix(groundColour(in.height, slope), photo.colour, photo.found);
@@ -343,14 +343,19 @@ fn shade(in : VSOut, dmx : vec2f, dmy : vec2f, under : bool, facet : vec3f, apro
         at = in.merc + vec2f(away.x, -away.y) * (FACE_LOOK_M * smoothstep(0.0, 0.25, abs(face)) / vtMetresPerRef());
       }
       let wide = select(32.0, 16.0, abs(face) > steep);
-      let blur = photoBlur(at, max(select(6.0, wide, look > 0.0), max(length(dmx), length(dmy))));
-      if (look > 0.0) { albedo = mix(albedo, faceLook(in.merc, in.height, n, blur, steep), look); }
+      let blurWidth = max(select(6.0, wide, look > 0.0), max(length(dmx), length(dmy)));
+      // (For the roads alone, looked at only where one covers the pixel: vector.wgsl, 5.18f.)
+      var blur = vec4f(0.0, 0.0, 0.0, -1.0);
+      if (look > 0.0) {
+        blur = photoBlur(at, blurWidth);
+        albedo = mix(albedo, faceLook(in.merc, in.height, n, blur, steep), look);
+      }
       // And lit as its own triangle faces (turned to the side its vertices' normals are on).
       if (look > 0.0 && face != 0.0 && fl > 1e-12) {
         let own = facet / fl * select(-1.0, 1.0, dot(facet, n) >= 0.0);
         light = mix(light, mix(modelledLight(own), photoLight(own), photo.found), look);
       }
-      if (roads.x > 0.0) { albedo = vectorRoads(in.merc, dmx, dmy, albedo, roads, blur, VT_ON_GROUND); }
+      if (roads.x > 0.0) { albedo = vectorRoads(in.merc, dmx, dmy, albedo, roads, blur, VT_ON_GROUND, vec3f(at, blurWidth)); }
     }
     if (frame.debugMode == 3u) {
       let edge = min(min(in.uv.x, 1.0 - in.uv.x), min(in.uv.y, 1.0 - in.uv.y));

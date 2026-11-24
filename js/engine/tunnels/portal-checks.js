@@ -1,7 +1,7 @@
 /* portal-checks.js — the portals as placed, checked against the ground as drawn (5.19a: on the render thread, which
  * has that ground; the tunnels' thread, which placed them, is told what was found).
  *
- * Every LIFT_EVERY frames, for each tube placed (its copy: placed.js), each of its portals:
+ * Every LIFT_EVERY frames, for the tubes placed (their copies: placed.js) in turn, CHECK_MS at a time, each portal:
  *
  *   - Its floor against the road in front of it as drawn (align). The road running out of a portal is pinned to its
  *     floor (vector/portals.js) and held there for its first metres (shape.c PORTAL_HOLD: at Airolo's farm track box
@@ -36,8 +36,11 @@ import { TUBE_END, TUBE_POINT } from './groups.js';
 import { spineOf, middleAt } from './mesh.js';
 import { pinnedRoadAt } from '../vector/portals.js';
 
-/* Frames between the checks (render.js). */
-export const LIFT_EVERY = 15;
+/* Frames between the checks (render.js), and the milliseconds a check may take: the tubes are gone through in turn
+ * from where the last one stopped (5.18f: all of them at once, while the ground was loading, took the render thread
+ * 56 ms after a jump to Lugano). */
+export const LIFT_EVERY = 3;
+const CHECK_MS = 2;
 /* align: the ground in front looked at LIFT_OUT metres out, LIFT_ACROSS either side of the middle (at most half the
  * mouth's half-width); level within LIFT_LEVEL, off by more than LIFT_TOL; the floor moved LIFT_MOST at most, in
  * LIFT_TRIES goes at most. */
@@ -59,12 +62,15 @@ export class PortalChecks {
    *                     ground there changed), or null
    */
   run(tubes, { groundAt, shapedGround, shapedAt, entryAt }) {
-    const out = [];
-    for (const t of tubes) {
+    const out = [], start = performance.now(), n = tubes.length;
+    for (let k = 0; k < n; k++) {
+      const t = tubes[((this.next ?? 0) + k) % n];
       if (t.asked) continue;
       const before = out.length;
       if (!this.align(t, groundAt, shapedAt, out)) this.trim(t, shapedGround, shapedAt, entryAt, out);
       if (out.length > before) t.asked = true;
+      // Its time taken: the next check goes on from the tube after this one.
+      if (performance.now() - start > CHECK_MS) { this.next = ((this.next ?? 0) + k + 1) % n; return out; }
     }
     return out;
   }

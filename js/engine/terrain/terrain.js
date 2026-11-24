@@ -136,6 +136,9 @@ const DROP_MS = 0.5;       // and for at most this long; at least one goes
  * detail by at least this factor (more when far over), never below the
  * floor; with 30% of the budget free for a while, detail comes back a step
  * at a time. */
+/* Distant terrain in the haze one level coarser at most (#hazed, 5.18f): the haze's distance, and the error it adds. */
+const HAZE_FAR = 12000;
+const HAZE_SSE = 1;
 const COARSEN = 0.85;
 const RELAX = 1.1;
 const RELAX_AFTER_MS = 2000;
@@ -567,7 +570,7 @@ export class Terrain {
 
     // Split only once every child in view that exists has arrived. Moving
     // fast, missing children are asked for only at the lower detail.
-    const ask = this.motionScale >= 1 || geometricError(t.z) * this.errorFactor * this.motionScale > d;
+    const ask = this.motionScale >= 1 || geometricError(t.z) * this.errorFactor * this.motionScale > this.#hazed(d);
     let ready = true;
     for (let i = 0; i < 4; i++) {
       const c = children[i];
@@ -614,9 +617,19 @@ export class Terrain {
     this.dirty = true;
   }
 
+  /* A distance as the detail sees it (5.18f): in the haze, farther (Cesium's fog: a tile partly in it takes up to
+   * HAZE_SSE times more error, its write-up 35% fewer tiles towards the horizon). The haze thickens over HAZE_FAR
+   * metres (from high up, over the camera's height above the ground twice, if that is more), as 1 − exp(−(d/far)²). */
+  #hazed(d) {
+    const v = this.view, ground = v?.last?.ground;
+    const above = v?.camera && Number.isFinite(ground) ? Math.max(0, v.camera.height - ground) : 0;
+    const x = d / Math.max(HAZE_FAR, 2 * above);
+    return d * (1 + HAZE_SSE * (1 - Math.exp(-x * x)));
+  }
+
   /** The children to draw instead of this tile, or null if it is detailed enough. */
   #refinement(t, d) {
-    if (geometricError(t.z) * this.errorFactor <= d) return null;
+    if (geometricError(t.z) * this.errorFactor <= this.#hazed(d)) return null;
     const children = t.children ?? this.#split(t);
     for (let i = 0; i < 4; i++) if (children[i].available) return children;
     return null;   // nothing finer exists here

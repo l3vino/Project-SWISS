@@ -679,8 +679,9 @@ fn shadeBuilding(in : VSOut, k : Slopes) -> vec4f {
     if ((block.flags & BLOCK_DECKS) != 0u && frame.debugMode == 0u) {
       let drawn = vectorReach(in.merc, dmx, dmy, photo);
       if (drawn.x > 0.0) {
-        let blur = photoBlur(in.merc, max(6.0, max(length(dmx), length(dmy))));
-        roofColour = vectorRoads(in.merc, dmx, dmy, roofColour, drawn, blur, VT_ON_DECK);
+        // (The blurred photo looked at only where a road covers the pixel: vector.wgsl, 5.18f.)
+        roofColour = vectorRoads(in.merc, dmx, dmy, roofColour, drawn, vec4f(0.0, 0.0, 0.0, -1.0), VT_ON_DECK,
+          vec3f(in.merc, max(6.0, max(length(dmx), length(dmy)))));
       }
     }
     photoFound = photo.found;

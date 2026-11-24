@@ -143,9 +143,7 @@ export class BuildingsPass {
     // Made again only where the cuts reaching it are not the same as before (cuts.js cutsNear).
     const near = cutsNear(t.cuts, frame, g.boxMin, g.boxSize, this.nearCuts);
     if (g.cut && sameList(g.cut.near, near)) { g.cut.version = t.cutVersion; return g.cut.data; }
-    const t0 = performance.now();
     const out = cutsInFrame(near, frame, g.boxMin, g.boxSize, false);
-    this.cutMs += performance.now() - t0;
     g.cut = { version: t.cutVersion, near: near.slice(), data: out.length ? Float32Array.from(out) : null, id: ++cutIds };
     return g.cut.data;
   }
@@ -187,7 +185,9 @@ export class BuildingsPass {
       d.set(g.boxMin, o + 16);
       d.set(g.boxSize, o + 20);
       // Its cuts (fsCut), after the others' in the shared buffer.
+      const c0 = performance.now();
       const cuts = this.#cutsOf(g), segments = cuts ? cuts.length / CUT_FLOATS : 0;
+      this.cutMs += performance.now() - c0;
       this.words[o + 15] = cutCount;
       this.words[o + 19] = segments;
       g.cutDrawn = segments;
