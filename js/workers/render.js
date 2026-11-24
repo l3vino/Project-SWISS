@@ -65,7 +65,8 @@ const uploads = new UploadQueue(2);
 const profiler = new Profiler(['physics', 'uploads', 'view', 'terrain', 'buildings', 'evict', 'maintain',
   'ground', 'imagery', 'vector', 'tunnels', 'requests', 'draw', 'submit',
   // Inside 'draw' (5.18f): each pass's update and recording (frame.js add).
-  'draw air', 'draw sky', 'draw terrain', 'draw tunnels', 'draw buildings', 'draw cables', 'draw path', 'draw labels']);
+  'draw air', 'draw sky', 'draw terrain', 'draw tunnels', 'draw buildings', 'draw cables', 'draw path', 'draw labels',
+  'draw cuts', 'tunnel checks']);
 /* Reused every frame rather than allocated. */
 const viewParams = { viewHeight: 1, fovY: FOV_Y, aspect: 1, near: 0.1 };
 const imageryParams = { aboveGround: 0, viewHeight: 1, fovY: FOV_Y, reach: 20000 };
@@ -587,10 +588,11 @@ function step(dt) {
   vector.update(camera, vectorParams);
   profiler.lap('vector');
   tunnels.update(camera);
+  profiler.lap('tunnels');
   // The portals' floors against the roads in front of them as drawn (the ground cut with the roads as they are now),
   // and where their tubes start against it (portal-checks.js; what they find goes to the tunnels' thread).
   if (++streamFrames % LIFT_EVERY === 0) tunnels.checkPortals(portalGround);
-  profiler.lap('tunnels');
+  profiler.lap('tunnel checks');
   // Every layer has chosen what it wants: hand out the decode threads.
   scheduler.dispatch();
   profiler.lap('requests');

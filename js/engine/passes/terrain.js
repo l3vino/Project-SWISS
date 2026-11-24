@@ -296,7 +296,9 @@ export class TerrainPass {
       const near = cutsNear(tunnels.cuts, f, f.lo, f.size, this.nearCuts);
       if (c && c.frame === f && sameList(c.near, near)) c.version = tunnels.cutVersion;
       else {
+        const t0 = performance.now();
         const out = cutsInFrame(near, f, f.lo, f.size, true);
+        this.cutMs += performance.now() - t0;
         c = t.cut = { version: tunnels.cutVersion, frame: f, near: near.slice(), data: out.length ? Float32Array.from(out) : null, id: ++cutIds, sortedAt: null, ...cutsReach(out) };
       }
     }

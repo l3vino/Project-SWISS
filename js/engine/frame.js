@@ -181,9 +181,11 @@ export class Frame {
     payload.width = this.width; payload.height = this.height; payload.time = time; payload.dt = dt;
     for (const pass of this.passes) {
       const t0 = prof && pass.profileAs ? performance.now() : 0;
+      pass.cutMs = 0;
       pass.update?.(payload);
       pass.record(encoder, colorView, this.depthView);
-      if (t0) prof.carve(pass.profileAs, performance.now() - t0);
+      // (What it spent putting the tunnels' cuts into its tiles' frames counted apart: 'draw cuts'.)
+      if (t0) { prof.carve(pass.profileAs, performance.now() - t0 - pass.cutMs); prof.carve('draw cuts', pass.cutMs); }
     }
     prof?.lap('draw');
 
