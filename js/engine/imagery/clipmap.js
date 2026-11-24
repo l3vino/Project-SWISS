@@ -46,7 +46,12 @@ const BATCH = 8;                  // tiles placed per frame, at most
 const POSTS_PER_FRAME = 8;        // requests sent to the decode threads per frame, at most
 const EMPTY = 0xFFFFFFFF;
 const LEVEL_BYTES = 32;
-const UNIFORM_BYTES = MAX_LEVELS * LEVEL_BYTES + 32;
+const UNIFORM_BYTES = MAX_LEVELS * LEVEL_BYTES + 48;
+/* The photo's filtering (5.18f, Graphics → Quality): anisotropic taps at most, and how wide a band round each change
+ * of photo level two levels are blended in (0.5: everywhere, as up to 5.18e; less: only near the change, as GPU
+ * drivers' "brilinear" trilinear optimization; imagery.wgsl sampleImagery). */
+const ANISO = [1, 2, 4, 8, 16];
+export const BAND_NEAR = 0.15;   // the band of "near level changes" (render.js applySettings)
 const EARTH_CIRCUMFERENCE = 40075016.686;
 /* How far out a level is still sampled, as a multiple of the distance at
  * which its texels exactly match a screen pixel. The shader picks a level
@@ -94,12 +99,9 @@ export class Clipmap {
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       ],
     });
-    this.sampler = device.createSampler({
-      label: 'imagery',
-      addressModeU: 'repeat', addressModeV: 'repeat',
-      magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
-      maxAnisotropy: 16,
-    });
+    this.aniso = 16;
+    this.band = 0.5;
+    this.sampler = this.#sampler();
     this.uniformData = new ArrayBuffer(UNIFORM_BYTES);
     this.uniformF32 = new Float32Array(this.uniformData);
     this.uniformU32 = new Uint32Array(this.uniformData);
@@ -174,6 +176,41 @@ export class Clipmap {
   /** Imagery sharpness: a level-of-detail bias, in zoom levels. */
   setSharpness(bias) { this.sharpness = Math.max(0, Number(bias) || 0); }
 
+  /** Anisotropic filtering of the photo, taps at most (1, 2, 4, 8 or 16): a new sampler, bound at once. */
+  setFiltering(n) {
+    const a = ANISO.reduce((best, v) => (Math.abs(v - Number(n)) < Math.abs(best - Number(n)) ? v : best), 16);
+    if (a === this.aniso) return;
+    this.aniso = a;
+    this.sampler = this.#sampler();
+    if (this.texture) this.#bind();
+  }
+
+  /** The band round each change of photo level two levels are blended in: 0.5 everywhere, less only near it. */
+  setLevelBlend(band) { this.band = Math.min(0.5, Math.max(0, Number(band) || 0)); }
+
+  #sampler() {
+    return this.device.createSampler({
+      label: 'imagery',
+      addressModeU: 'repeat', addressModeV: 'repeat',
+      magFilter: 'linear', minFilter: 'linear', mipmapFilter: 'linear',
+      maxAnisotropy: this.aniso,
+    });
+  }
+
+  /* The bind group the passes take each frame (imagery.bindGroup): the texture, the sampler, the levels, the slots. */
+  #bind() {
+    this.bindGroup = this.device.createBindGroup({
+      label: 'imagery',
+      layout: this.layout,
+      entries: [
+        { binding: 0, resource: this.texture.createView({ dimension: '2d-array' }) },
+        { binding: 1, resource: this.sampler },
+        { binding: 2, resource: { buffer: this.uniforms } },
+        { binding: 3, resource: { buffer: this.residency } },
+      ],
+    });
+  }
+
   /** Tiles per window side: the Imagery detail setting. Reallocates. */
   setWindow(n) {
     if (n === this.window) return;
@@ -206,16 +243,7 @@ export class Clipmap {
     });
     this.device.queue.writeBuffer(this.residency, 0, this.slots);
 
-    this.bindGroup = this.device.createBindGroup({
-      label: 'imagery',
-      layout: this.layout,
-      entries: [
-        { binding: 0, resource: this.texture.createView({ dimension: '2d-array' }) },
-        { binding: 1, resource: this.sampler },
-        { binding: 2, resource: { buffer: this.uniforms } },
-        { binding: 3, resource: { buffer: this.residency } },
-      ],
-    });
+    this.#bind();
     for (const u of this.uploads) u.bitmap?.close();
     this.uploads.length = 0;
   }
@@ -665,6 +693,8 @@ export class Clipmap {
     f[base + 5] = n * TILE;
     u[base + 6] = this.enabled ? 1 : 0;
     f[base + 7] = this.sharpness;
+    f[base + 8] = this.aniso;
+    f[base + 9] = this.band;
     this.device.queue.writeBuffer(this.uniforms, 0, this.uniformData);
 
     if (count) this.stats.resident = resident;

@@ -220,7 +220,7 @@ export function buildReport(s, { settings = {}, info = {} } = {}) {
   out.push(`gpu features: ${(a.features || info.features || []).join(', ')}`);
   if (a.limits) out.push(`gpu limits: ${Object.entries(a.limits).map(([k, v]) => `${k}=${v}`).join(' ')}`);
   out.push(`screen: ${innerWidth}×${innerHeight} css px · dpr ${devicePixelRatio} · buffer ${s.width}×${s.height} · render scale ${s.renderScale}`);
-  const keys = ['renderScale', 'fpsCap', 'viewDistanceKm', 'terrainDetailKm', 'imageryQuality', 'imagerySharpness', 'imageryDetail',
+  const keys = ['renderScale', 'fpsCap', 'viewDistanceKm', 'terrainDetailKm', 'imageryQuality', 'imagerySharpness', 'photoFiltering', 'photoBlend', 'imageryDetail',
     'terrainMemory', 'decodeThreads', 'buildings', 'structures', 'buildingDistanceKm', 'buildingDetailKm', 'buildingMemory',
     'roadDistanceKm', 'roadDetailKm', 'roadMemory', 'roadWidths', 'roadShaping', 'trackDistance', 'layerRoads', 'layerPaths', 'layerTunnels', 'gpuTiming', 'flyThrough'];
   out.push(`settings: ${keys.filter((k) => k in settings).map((k) => `${k}=${settings[k]}`).join(' ')}`);

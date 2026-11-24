@@ -28,6 +28,10 @@ struct Imagery {
   texels  : f32,      // texels per texture side: window * 256
   enabled : u32,
   bias    : f32,      // zoom levels of softening, from the sharpness setting
+  aniso   : f32,      // anisotropic taps at most (the sampler's; 5.18f: the photo filtering setting)
+  band    : f32,      // half the band round a change of level two levels are blended in (0.5: everywhere)
+  _p0     : f32,
+  _p1     : f32,
 };
 
 @group(2) @binding(0) var imageryTex : texture_2d_array<f32>;
@@ -85,19 +89,28 @@ fn sampleImagery(p : vec2f, dx : vec2f, dy : vec2f) -> ImagerySample {
   if (imagery.enabled == 0u) { return out; }
 
   // The level follows the short axis of the pixel's footprint on the ground;
-  // anisotropic filtering takes up to 16 taps along the long one.
+  // anisotropic filtering takes up to `aniso` taps along the long one.
   let lx = length(dx);
   let ly = length(dy);
-  let footprint = max(max(lx, ly) / 16.0, min(lx, ly));
+  let footprint = max(max(lx, ly) / max(imagery.aniso, 1.0), min(lx, ly));
   let zoom = imagery.zMax - log2(max(footprint, 1e-6)) - imagery.bias;
   let top = f32(imagery.top);
   let want = clamp(zoom - imagery.zMin, 0.0, top);
-  let wanted = clamp(i32(floor(want)), 0, IMAGERY_WALK);
-  let toFiner = select(fract(want), 0.0, want >= top);
+  // The nearest level, and the one beside it blended in across a band round each change of level (5.18f): with a
+  // band of 0.5 the two either side of the zoom wanted, in its fraction, everywhere (trilinear, as up to 5.18e: two
+  // samples a pixel); with less, one level alone between the bands ("brilinear"), half and half at the change itself,
+  // so it stays a gradient, not a line.
+  let nearest = min(floor(want + 0.5), top);
+  let off = want - nearest;
+  let band = max(imagery.band, 1e-3);
+  let w = 0.5 * clamp((abs(off) - (0.5 - band)) / band, 0.0, 1.0);
+  let besideUp = off > 0.0 && nearest < top;
+  let besideDown = off < 0.0 && nearest > 0.0;
+  let wanted = clamp(i32(nearest), 0, IMAGERY_WALK);
 
   // Every loop a pixel runs is bounded by a constant (5.17g; lost when 5.17i went back to 5.17d's shaders, put back in
   // 5.17o after his RTX 2080 Ti was reset again): IMAGERY_WALK levels down at most.
-  var level = min(wanted, IMAGERY_WALK);
+  var level = wanted;
   var walked = 0;
   loop {
     if (level < 0 || walked > IMAGERY_WALK) { return out; }
@@ -107,13 +120,14 @@ fn sampleImagery(p : vec2f, dx : vec2f, dy : vec2f) -> ImagerySample {
       out.colour = c.rgb;
       out.found = 1.0;
       out.level = imagery.zMin + f32(level);
-      // Blend towards the next finer level across the fractional zoom, so
-      // level changes on the ground are gradients, not lines.
-      if (level == wanted && toFiner > 0.0) {
-        let f = imageryLevel(u32(level) + 1u, p, dx, dy);
+      // The level beside it, where the pixel is in a band (only where the nearest itself answered: while a finer
+      // level streams in, the coarser stands alone).
+      if (level == wanted && w > 0.0 && (besideUp || besideDown)) {
+        let other = select(level - 1, level + 1, besideUp);
+        let f = imageryLevel(u32(other), p, dx, dy);
         if (f.w > 0.0) {
-          out.colour = mix(c.rgb, f.rgb, toFiner);
-          out.level += toFiner;
+          out.colour = mix(c.rgb, f.rgb, w);
+          out.level += select(-w, w, besideUp);
         }
       }
       return out;

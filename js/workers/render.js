@@ -31,7 +31,7 @@ import { View } from '../engine/view.js';
 import { UploadQueue } from '../engine/uploads.js';
 import { Profiler } from '../engine/profiler.js';
 import { Camera, FOV_Y } from '../engine/camera.js';
-import { Clipmap } from '../engine/imagery/clipmap.js';
+import { Clipmap, BAND_NEAR } from '../engine/imagery/clipmap.js';
 import { VectorTiles } from '../engine/vector/tiles.js';
 import { PIECE_FLOATS, TRACK_FLOATS } from '../engine/vector/pieces.js';
 import { TunnelView, EYE } from '../engine/tunnels/view.js';
@@ -1601,6 +1601,9 @@ function applySettings(s) {
     imagery.setQuality(s.imageryQuality).catch((err) => rpc.send('render-error', { message: err.message, stack: '' }));
   }
   if ('imagerySharpness' in s && imagery) imagery.setSharpness(s.imagerySharpness);
+  // The photo's filtering (5.18f): anisotropic taps, and two levels blended everywhere or near each change of level.
+  if ('photoFiltering' in s && imagery) imagery.setFiltering(Number(s.photoFiltering) || 16);
+  if ('photoBlend' in s && imagery) imagery.setLevelBlend(s.photoBlend === 'near' ? BAND_NEAR : 0.5);
   // Distances come in kilometres; the far end of the view distance slider
   // means the horizon.
   if ('viewDistanceKm' in s) {
