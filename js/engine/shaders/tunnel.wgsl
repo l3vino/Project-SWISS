@@ -667,7 +667,7 @@ fn fs(in : VSOut) -> @location(0) vec4f {
 // on into the other tube stops at its edge). Floors stay: a branch's floor runs on into the room it opens into, at one
 // height with that one's where they meet, and where they part the higher shows (left out, the lower would show
 // through as a trench). `own`: the point's height over this tube's own floor (its cross-section's, tunnel.c).
-const MEET_IN : f32 = 0.1;
+const MEET_IN : f32 = 0.5;
 const MEET_FIT : f32 = 0.99;
 const MEET_UNDER : f32 = 0.08;
 const MEET_TIE : f32 = 0.05;
