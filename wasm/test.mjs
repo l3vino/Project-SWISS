@@ -2461,6 +2461,40 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (!ok) process.exitCode = 1;
 }
 
+/* ---- 17c. a view as a link (core/view-link.js, 5.18e): written and read back the same to its last digit, Google
+ * Earth's other fields passed over, plain coordinates a place, and anything else no view. */
+{
+  const { formatView, parseView } = await import('../js/core/view-link.js');
+  const problems = [];
+  const DEG = Math.PI / 180;
+  const cams = [
+    { lon: 8.9868, lat: 46.1545, height: 219.04, yaw: (174.3 - 360) * DEG, pitch: 0, mode: 'walk' },
+    { lon: -0.000001, lat: -33.5, height: -12.3, yaw: 0.0001, pitch: -89 * DEG, mode: 'fly' },
+    { lon: 179.9, lat: 85, height: 399999, yaw: -1e-9, pitch: 89 * DEG, mode: 'plane' },
+  ];
+  for (const c of cams) {
+    const link = formatView(c), v = parseView(`https://l3vino.github.io/Project-SWISS/?build=518e#${link}`);
+    const again = v && formatView({ ...v, mode: v.mode });
+    const want = link.replace(/,walk$/, '') + (c.mode === 'walk' ? ',walk' : '');
+    if (again !== want) problems.push(`${link} read back as ${again}`);
+  }
+  const first = formatView(cams[0]);
+  if (first !== '@46.154500,8.986800,219.0a,174.3h,90.0t,walk') problems.push(`written ${first}`);
+  const earth = parseView('#@46.1545,8.9868,219a,35y,174.3h,90t,0r');
+  if (!earth || Math.abs(earth.yaw - 174.3 * DEG) > 1e-9 || earth.height !== 219 || earth.pitch !== 0 || earth.mode !== 'fly') problems.push('a Google Earth view not read');
+  const coords = parseView(' 46.1545, 8.9868 ');
+  if (!coords || coords.lat !== 46.1545 || coords.lon !== 8.9868 || coords.height !== undefined) problems.push('plain coordinates not a place');
+  const spaced = parseView('46.1545 8.9868');
+  if (!spaced || spaced.lon !== 8.9868) problems.push('coordinates apart by a space not read');
+  for (const bad of ['', 'Bellinzona', '#@46.15', '#@91,8,100a', '#@46,181,100a', '#@46,8,abc', '#@46,8,100a,200t', '#@46,8,500000a',
+    '46.1545, 8.9868, 300', '#@46,8,100x9', null]) {
+    if (parseView(bad) !== null) problems.push(`"${bad}" taken for a view`);
+  }
+  console.log(`view links: ${cams.length} cameras written and read back, ${first}; a Google Earth view, plain coordinates and 11 ` +
+    `bad ones — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  if (problems.length) process.exitCode = 1;
+}
+
 /* ---- 17b. every module links (tools/linkcheck.mjs, 5.19a): a name imported that another module no longer exports
  * stops the thread that loads it from starting. */
 {

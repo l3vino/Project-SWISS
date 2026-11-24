@@ -119,6 +119,9 @@ export class Readout {
     if (c) {
       this.set('position', `${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`);
       this.set('altitude', this.#length(c.height));
+      // Where it looks (5.18e), as a view link writes it: heading clockwise from north, tilt 90 at the horizon.
+      const heading = Math.round(((((c.yaw * 180) / Math.PI) % 360) + 360) % 360) % 360;
+      this.set('look', `${heading}° · ${Math.round(90 + (c.pitch * 180) / Math.PI)}°`);
     }
     const m = stats.motion;
     if (m) {

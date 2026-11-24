@@ -31,6 +31,8 @@ export const ACTIONS = [
   { id: 'pointer', label: 'Free the mouse · take it back', keys: ['KeyE'],
     hint: 'Frees the mouse for the search and the menus without leaving fullscreen. Press again, or click the view, to look around again.' },
   { id: 'menu', label: 'Open settings', keys: ['KeyO'] },
+  { id: 'link', label: 'Copy a link to this view', keys: ['KeyL'],
+    hint: 'The link opens the app right here, looking the same way (the address bar keeps it too, once you stop).' },
   { id: 'readout', label: 'Show or hide the readout', keys: ['F3'] },
   { id: 'perf', label: 'Show or hide performance', keys: ['F2'] },
 ];
@@ -185,6 +187,8 @@ export const TABS = [
           hint: 'The hillside is opened where a tunnel is. Off, the tunnels are still there behind whole ground: if the GPU is reset, try with this off.' },
         { id: 'boreCut', label: 'Cut the ground along tunnels', type: 'toggle', default: true,
           hint: 'The ground is cut away along each tunnel\'s whole bore, so none stands inside it or on its entrance, and tunnels running into each other are one room. Off: opened at the portals only. Switched off by itself after the GPU was reset while it was on.' },
+        { id: 'tunnelJoins', label: 'Show tunnel joins', type: 'toggle', default: false,
+          hint: 'Where tunnels run into each other, what each one leaves out (inside the other\'s room) is painted in magenta stripes instead. For checking junctions.' },
         { id: 'openBuildings', label: 'Open buildings at tunnels', type: 'toggle', default: true,
           hint: 'Walls standing across a tunnel are cut away inside it. Off: if the GPU is reset, try with this off.' },
         { id: 'gpuTiming', label: 'Measure GPU time', type: 'toggle', default: true,

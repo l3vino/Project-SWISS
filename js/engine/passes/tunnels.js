@@ -72,13 +72,22 @@ export class TunnelsPass {
       device.createRenderPipelineAsync(describe('tunnels', 'fs')),
       device.createRenderPipelineAsync(describe('tunnels-meet', 'fsMeet')),
     ]);
-    return new TunnelsPass(device, { pipeline, meetPipeline, slotLayout, timer, tunnels, view, imagery, vector, frame });
+    // Diagnostics → Show tunnel joins (5.18e): fsMeet drawing what it leaves out, made the first time it is asked for.
+    const showDescriptor = describe('tunnels-meet-show', 'fsMeet');
+    showDescriptor.fragment.constants = { MEET_SHOW: 1 };
+    return new TunnelsPass(device, { pipeline, meetPipeline, showDescriptor, slotLayout, timer, tunnels, view, imagery, vector, frame });
   }
 
-  constructor(device, { pipeline, meetPipeline, slotLayout, timer, tunnels, view, imagery, vector, frame }) {
+  constructor(device, { pipeline, meetPipeline, showDescriptor, slotLayout, timer, tunnels, view, imagery, vector, frame }) {
     this.device = device;
     this.pipeline = pipeline;
     this.meetPipeline = meetPipeline;
+    this.cutPipeline = meetPipeline;  // the one drawing the meshes others reach into: it, or showPipeline
+    this.showDescriptor = showDescriptor;
+    this.showPipeline = null;
+    this.showWanted = false;
+    this.showMaking = null;           // the joins view's pipeline being made
+    this.showFailed = false;
     this.timer = timer;
     this.tunnels = tunnels;
     this.view = view;
@@ -114,6 +123,19 @@ export class TunnelsPass {
     this.meeting = 0;             // of them drawn with others' pieces (fsMeet), and how many pieces
     this.meetPieces = 0;
     this.meetCut = true;          // Graphics → Diagnostics → Cut the ground along tunnels (render.js): off, no fsMeet
+  }
+
+  /** Graphics → Diagnostics → Show tunnel joins (render.js, 5.18e): what the meshes others reach into leave out is
+   *  drawn, striped, instead (its pipeline made the first time; until it is ready they are drawn as before). */
+  showJoins(on) {
+    this.showWanted = on;
+    if (on && !this.showPipeline && !this.showMaking && !this.showFailed) {
+      this.showMaking = this.device.createRenderPipelineAsync(this.showDescriptor).then((p) => { this.showPipeline = p; })
+        .catch((err) => { this.showFailed = true; console.warn(`[tunnels] no joins view: ${err.message}`); })
+        .finally(() => { this.showMaking = null; this.showJoins(this.showWanted); });
+      return;
+    }
+    this.cutPipeline = on && this.showPipeline ? this.showPipeline : this.meetPipeline;
   }
 
   update({ camera }) {
@@ -233,7 +255,7 @@ export class TunnelsPass {
       let set = false;
       for (let i = 0; i < this.draws.length; i++) {
         if ((this.meetSlots[i] !== 0) !== meet) continue;
-        if (!set) { pass.setPipeline(meet ? this.meetPipeline : this.pipeline); set = true; }
+        if (!set) { pass.setPipeline(meet ? this.cutPipeline : this.pipeline); set = true; }
         const m = this.draws[i];
         offsets[0] = i * SLOT_STRIDE;
         offsets[1] = this.meetSlots[i] * CUT_SLOT_BYTES;

@@ -1280,14 +1280,26 @@ rpc.on('flyto', ({ lon, lat, elevation, label, instant = false }) => {
   arrival.counts = null;
   if (covered) preloadArrival(true);
 });
-rpc.on('camera', ({ state }) => {
+/* `arrive` (a view link, the console's go: ui/views.js, 5.18e): the tiles under the place asked for at once, and a
+ * walker settles onto the ground (or a tube's floor) as it loads, rather than walking on from the air. */
+rpc.on('camera', ({ state, arrive }) => {
   if (!camera) return;
   flight.cancel('placed');
   flyTarget = null;
   camera.apply(state);
   resetMotion();
-  if (state.mode) setMode(state.mode === 'plane' ? 'fly' : state.mode);
+  if (arrive && terrain.covers(state.lon, state.lat)) terrain.prefetchColumn(state.lon, state.lat);
+  if (state.mode) setMode(state.mode === 'plane' ? 'fly' : state.mode, arrive && state.mode === 'walk' ? { arrive: true } : {});
 });
+/* Looking a way where the camera is (the console's look, 5.18e). */
+rpc.on('turn', ({ yaw, pitch }) => {
+  if (!camera) return;
+  flight.cancel('placed');
+  flyTarget = null;
+  camera.turnTo(yaw, pitch);
+});
+/* The camera now, for a view link and the console's view (5.18e): the stats' copy is up to half a second old. */
+rpc.on('view', () => (camera ? { camera: camera.state(), aboveGround: motionReport().aboveGround ?? null } : null));
 
 /*
  * Put the walker on the ground at a place: the verification rig uses it, and
@@ -1538,6 +1550,7 @@ function applySettings(s) {
   if ('boreCut' in s && terrainPass) terrainPass.boreCut = s.boreCut !== false;
   // (Tubes meeting are cut along each other's bores the same way, 5.17m: off with it.)
   if ('boreCut' in s && tunnelsPass) tunnelsPass.meetCut = s.boreCut !== false;
+  if ('tunnelJoins' in s && tunnelsPass) tunnelsPass.showJoins(s.tunnelJoins === true);
   if ('openBuildings' in s && buildingsPass) buildingsPass.openCuts = s.openBuildings !== false;
   if ('gpuTiming' in s) {
     const on = Boolean(s.gpuTiming) && caps.timestamps;
@@ -1690,7 +1703,8 @@ function startReporting() {
       imagery: imagery.stats,
       vector: vector.stats,
       tunnels: { ...tunnels.stats, enabled: tunnels.enabled, bytes: tunnels.bytes, portals: tunnels.portals.length,
-        drawn: tunnelsPass?.draws.length ?? 0, triangles: Math.round(tunnelsPass?.triangles ?? 0), inside: tunnels.meshes.some((m) => m.inside) },
+        drawn: tunnelsPass?.draws.length ?? 0, triangles: Math.round(tunnelsPass?.triangles ?? 0), inside: tunnels.meshes.some((m) => m.inside),
+        busy: tunnels.busy },
       buildings: buildingStats(),
       requests: requestStats(),
       groundTiles: ground.entries.size,

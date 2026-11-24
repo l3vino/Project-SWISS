@@ -717,6 +717,10 @@ fn onOther(rel : vec3f) -> bool {
   return found;
 }
 
+// Graphics → Diagnostics → Show tunnel joins (5.18e): what fsMeet leaves out is drawn instead, in magenta stripes, to
+// see at a junction which tube leaves out what (a pipeline of its own, made only once asked for: passes/tunnels.js).
+override MEET_SHOW : bool = false;
+
 @fragment
 fn fsMeet(in : VSOut) -> @location(0) vec4f {
   let dmx = dpdx(in.merc);
@@ -728,11 +732,20 @@ fn fsMeet(in : VSOut) -> @location(0) vec4f {
   // tracks run on to the switch; elsewhere a track inside the other's room is where its line runs). Its fittings on
   // the walls and in the vault (handrails, the overhead line) go with the walls.
   let track = in.material == T_BED || in.material == T_RAIL;
+  var leftOut = false;
   if (track) {
-    if (inMain(in.rel)) { discard; }
-  } else if (in.material != T_FLOOR && inMeets(in.rel, in.ah.y, onTop, select(-MEET_IN, MEET_FITTING, in.material == T_FIXTURE || in.material == T_INSULATOR))) { discard; }
+    leftOut = inMain(in.rel);
+  } else if (in.material != T_FLOOR) {
+    leftOut = inMeets(in.rel, in.ah.y, onTop, select(-MEET_IN, MEET_FITTING, in.material == T_FIXTURE || in.material == T_INSULATOR));
+  }
+  if (leftOut && !MEET_SHOW) { discard; }
   tNoMarks = in.material == T_FLOOR && onOther(in.rel);
-  return tShade(in, dmx, dmy, fw, fa);
+  let c = tShade(in, dmx, dmy, fw, fa);
+  if (leftOut) {
+    let stripe = select(0.35, 1.0, fract((in.along + in.ah.y) * 0.5) < 0.5);
+    return vec4f((c.rgb * vec3f(1.4, 0.2, 1.4) + vec3f(0.03, 0.0, 0.03)) * stripe, c.a);
+  }
+  return c;
 }
 
 fn tShade(in : VSOut, dmx : vec2f, dmy : vec2f, fw : f32, fa : f32) -> vec4f {

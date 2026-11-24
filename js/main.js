@@ -17,6 +17,7 @@ import { Search } from './ui/search.js';
 import { Menu, keyLabel } from './ui/menu.js';
 import { PerfPanel } from './ui/perf.js';
 import { Cockpit } from './ui/cockpit.js';
+import { Views } from './ui/views.js';
 import { BUILD } from './build.js';
 
 const boot = new Boot();
@@ -36,6 +37,7 @@ let flying = false;   // in the airplane (the crosshair is its pointer)
 /** Latest state pushed up from the render thread. */
 const live = { camera: null, view: null, info: null };
 let perf = null;
+let views = null;   // the view as a link and the camera at a command (ui/views.js, 5.18e)
 
 start().catch((err) => {
   console.error(err);
@@ -140,6 +142,7 @@ async function start() {
     throw new Error(`${err.message} Serve the folder over http, not from a file:// path.`);
   }
 
+  views = new Views(render, { toast });
   render.on('stats', onStats);
   render.on('notice', ({ text }) => toast.show(text));
   // The airplane's display (Settings → Vehicles → Airplane display): the
@@ -224,6 +227,13 @@ async function start() {
     // The ground as drawn at [lon, lat] points (null where not known exactly), for the rig.
     ground: (points) => render.request('ground', { points }, undefined, { timeout: 2000 }),
     get stats() { return live.stats; },
+    // For checking (5.18e, ui/views.js): go('…#@46.1545,8.9868,219a,174h,90t' | '46.1545, 8.9868' |
+    // { lat, lon, height or above, heading, tilt, walk }) and wait until it has loaded; look(heading, tilt); the view
+    // now (with its link); wait until nothing is loading.
+    go: (where, options) => views.go(where, options),
+    look: (heading, tilt) => views.look(heading, tilt),
+    view: () => views.view(),
+    settled: (options) => views.settled(options),
   });
 
   const sendSize = () => render.send('resize', viewportSize());
@@ -248,6 +258,9 @@ async function start() {
  * saved position in a country that is no longer registered still starts well.
  */
 function startingCamera() {
+  // A view link opened (5.18e: the address bar keeps one, so a reload comes back to it too).
+  const linked = Views.startFrom(registry);
+  if (linked) return linked;
   if (settings.get('spawn') === 'last') {
     const saved = session.camera(registry);
     if (saved) return saved;
@@ -275,6 +288,7 @@ function wireInterface(render, canvasEl) {
     if (action === 'menu') menu.toggle();
     else if (action === 'readout') settings.set('showTelemetry', !settings.get('showTelemetry'));
     else if (action === 'perf') settings.set('showPerf', !settings.get('showPerf'));
+    else if (action === 'link') views.copy().catch((err) => toast.show(`No link: ${err.message}`));
   };
 
   perf = new PerfPanel({
@@ -309,7 +323,7 @@ function wireInterface(render, canvasEl) {
     if (document.pointerLockElement || e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
     const binds = settings.get('keybinds');
-    for (const action of ['menu', 'readout', 'perf']) {
+    for (const action of ['menu', 'readout', 'perf', 'link']) {
       if ((binds[action] || []).includes(e.code)) { e.preventDefault(); pressAction(action); }
     }
   });
@@ -334,13 +348,17 @@ function wireInterface(render, canvasEl) {
       // (a walker lands on the ground and walks on); where there is no
       // terrain it says why. With the flight turned off in Settings, there at
       // once. The pick is a click or Enter, a user gesture, so the mouse can
-      // go straight back to the camera.
-      render.send('flyto', {
-        lon: place.lon, lat: place.lat,
-        elevation: Number.isFinite(place.elevation) ? place.elevation : null,
-        label: place.label,
-        instant: !settings.get('flyToResults'),
-      });
+      // go straight back to the camera. A view link pasted (5.18e): there at
+      // once, looking as it was.
+      if (place.view) views.go(place.view, { settle: false });
+      else {
+        render.send('flyto', {
+          lon: place.lon, lat: place.lat,
+          elevation: Number.isFinite(place.elevation) ? place.elevation : null,
+          label: place.label,
+          instant: !settings.get('flyToResults'),
+        });
+      }
       if (settings.get('pickTakesMouse')) input.takeMouse();
     },
   });
@@ -381,6 +399,7 @@ function onStats(stats) {
   live.view = stats.view;
   updateCredits(stats.view);
   session.record(stats.camera);
+  views?.onStats(stats);
   readout.update(stats);
   perf?.update(stats);
 }
@@ -427,6 +446,7 @@ function buildReadout(info) {
   readout.row('mode', 'motion');
   readout.row('position', 'position');
   readout.row('altitude', 'altitude');
+  readout.row('look', 'heading · tilt');
   readout.row('ground', 'above ground');
   readout.row('speed', 'speed');
   readout.row('tiles', 'terrain');

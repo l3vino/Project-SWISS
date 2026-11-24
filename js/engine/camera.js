@@ -101,6 +101,14 @@ export class Camera {
     this.#updateForward();
   }
 
+  /** Looks a given way (radians; one not given stays), as a view link or the console asks (5.18e). */
+  turnTo(yaw, pitch) {
+    if (Number.isFinite(yaw)) this.yaw = Math.atan2(Math.sin(yaw), Math.cos(yaw));
+    if (Number.isFinite(pitch)) this.pitch = clamp(pitch, -MAX_PITCH, MAX_PITCH);
+    this.moved = true;
+    this.#updateForward();
+  }
+
   /** Scroll changes speed geometrically, so it feels the same at 5 m/s and 5 km/s. */
   adjustSpeed(notches) {
     this.speed = clamp(this.speed * Math.exp(notches * 0.18), MIN_SPEED, MAX_SPEED);

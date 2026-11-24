@@ -182,6 +182,17 @@ export class TunnelSet {
     if (!on) { this.client.cancelAll(); this.#clear(); this.seenVersion = -1; }
   }
 
+  /** How much is still to do now (the console's swissgpu.settled waits for none of it, 5.18e): the tubes being found,
+   *  and each tube whose mesh, trace or ground is being made or waited for (one to be tried again later is not). */
+  pending(now = performance.now()) {
+    let n = this.tubesWanted || this.tubesBusy ? 1 : 0;
+    for (const r of this.records.values()) {
+      if (r.meshBusy || r.traceBusy || r.traceWanted || (r.meshWanted && !(r.meshAgainAt > now)) ||
+        r.grounds?.some((g) => g.state === 'tiles')) n++;
+    }
+    return n;
+  }
+
   /** Whether the open track is built in 3D (the setting): a railway tube's bed then stands as high as its (5.18c),
    *  else lies on the floor; each tube is made again (its signature holds the bed's height). */
   setTrack(on) {

@@ -11,6 +11,8 @@
  * typist from queueing eight round trips and rendering them out of order.
  */
 
+import { parseView } from '../core/view-link.js';
+
 const DEBOUNCE_MS = 140;
 
 /* The mode is remembered between visits, but it is not a setting: the switch
@@ -63,6 +65,18 @@ export class Search {
   }
 
   async #query(text) {
+    // A view link or plain coordinates pasted (5.18e, core/view-link.js): that place, no index asked.
+    const linked = parseView(text);
+    if (linked) {
+      this.controller?.abort();
+      const at = `${linked.lat.toFixed(5)}, ${linked.lon.toFixed(5)}`;
+      this.results = [linked.height === undefined
+        ? { label: at, kind: 'coordinates', lon: linked.lon, lat: linked.lat }
+        : { label: `${at} · ${Math.round(linked.height)} m`, kind: 'view', lon: linked.lon, lat: linked.lat, view: linked }];
+      this.active = 0;
+      this.#render(text);
+      return;
+    }
     const view = this.view();
     const national = this.scope === 'national';
     // Each mode has its own sources and never borrows the other's.
@@ -179,7 +193,7 @@ export class Search {
       this.#renderMessage(`Nothing on the map matches “${text}”.`);
       return;
     }
-    const credits = [...new Set(this.results.map((r) => r.source.attribution).filter(Boolean))];
+    const credits = [...new Set(this.results.map((r) => r.source?.attribution).filter(Boolean))];
     this.results.forEach((r, i) => {
       const li = document.createElement('li');
       li.className = 'search__result';
@@ -245,5 +259,6 @@ function kindLabel(kind) {
   return {
     gg25: 'commune', kantone: 'canton', district: 'district',
     zipcode: 'postcode', address: 'address', gazetteer: 'place', parcel: 'parcel',
+    view: 'view link', coordinates: 'coordinates',
   }[kind] || kind || '';
 }

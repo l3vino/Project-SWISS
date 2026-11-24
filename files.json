@@ -1,5 +1,5 @@
 {
- "build": "5.18d",
+ "build": "5.18e",
  "files": [
   "css/ui.css",
   "js/adapters/adapter.js",
@@ -21,6 +21,7 @@
   "js/core/session.js",
   "js/core/settings.js",
   "js/core/signal.js",
+  "js/core/view-link.js",
   "js/core/wasm.js",
   "js/core/workers.js",
   "js/engine/aircraft/atmosphere.js",
@@ -124,6 +125,7 @@
   "js/ui/menu.js",
   "js/ui/perf.js",
   "js/ui/search.js",
+  "js/ui/views.js",
   "js/workers/codec.js",
   "js/workers/index-cache.js",
   "js/workers/jobs/ground.js",

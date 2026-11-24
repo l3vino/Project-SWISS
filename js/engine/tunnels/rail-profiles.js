@@ -37,6 +37,13 @@ export class RailProfiles {
     this.stats = { tiles: 0, sent: 0, lines: 0, readings: 0, ms: 0 };
   }
 
+  /** Road tiles whose profiles are still to make (the console's swissgpu.settled waits for none, 5.18e). */
+  get pending() {
+    let n = 0;
+    for (const t of this.tiles.values()) if (!t.sent) n++;
+    return n;
+  }
+
   /** Road tiles' railway lines as they come ([key, railLines]) and go (keys). */
   apply(added, removed) {
     for (const key of removed) this.tiles.delete(key);
