@@ -83,7 +83,8 @@ export class Frame {
     const max = this.caps.maxTextureSize;
     const w = Math.min(max, Math.max(1, Math.round(this.cssWidth * this.dpr * this.renderScale)));
     const h = Math.min(max, Math.max(1, Math.round(this.cssHeight * this.dpr * this.renderScale)));
-    if (w === this.width && h === this.height) return;
+    // (Not without a depth buffer: a page started hidden is 1 × 1, the size the frame starts at, 5.18e.)
+    if (w === this.width && h === this.height && this.depth) return;
 
     this.width = w;
     this.height = h;
