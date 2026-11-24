@@ -171,15 +171,17 @@ function loadingOf(stats) {
   };
 }
 
-/* A view from go()'s object form, or null. */
+/* A view from go()'s object form (degrees: heading, tilt) or from one parseView made (radians: yaw, pitch), or null. */
 function fromObject(o) {
-  if (!o || typeof o !== 'object') return null;
-  const view = parseView(`${o.lat}, ${o.lon}`);
-  if (!view) return null;
+  if (!o || typeof o !== 'object' || !Number.isFinite(o.lat) || !Number.isFinite(o.lon) || Math.abs(o.lat) > 90 || Math.abs(o.lon) > 180) return null;
+  const view = { lat: o.lat, lon: o.lon, height: undefined, above: undefined, yaw: undefined, pitch: undefined, mode: undefined };
   if (Number.isFinite(o.height)) view.height = o.height;
   else if (Number.isFinite(o.above)) view.above = o.above;
   if (Number.isFinite(o.heading)) view.yaw = ((((o.heading % 360) + 540) % 360) - 180) * DEG;
+  else if (Number.isFinite(o.yaw)) view.yaw = o.yaw;
   if (Number.isFinite(o.tilt)) view.pitch = Math.max(-89, Math.min(89, o.tilt - 90)) * DEG;
-  if (o.walk === true) view.mode = 'walk';
+  else if (Number.isFinite(o.pitch)) view.pitch = o.pitch;
+  if (o.walk === true || o.mode === 'walk') view.mode = 'walk';
+  else if (o.mode === 'fly') view.mode = 'fly';
   return view;
 }
