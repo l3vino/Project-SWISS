@@ -241,7 +241,7 @@ export function fitUnder(sec, cover, clearance) {
  * half: not stretched up), the ellipse is `lowR` high (0: archH there too).
  */
 export function outlineAt(sec, wide = 1) {
-  const root = Math.sqrt(wide), up = (h) => (h > sec.spring ? sec.spring + (h - sec.spring) * root : h);
+  const root = vaultUp(wide), up = (h) => (h > sec.spring ? sec.spring + (h - sec.spring) * root : h);
   const o = { half: sec.low.half * wide, top: up(sec.low.top), archY: 0, archA: 0, archH: 0, crown: up(sec.height),
     inner: (yields(sec, wide) ? sec.low.half : sec.low.inner ?? sec.low.half) * wide, kerb: sec.kerb > 0 && sec.walkway > 0 ? sec.kerb : 0, lowR: 0 };
   if (sec.arch) {
@@ -251,6 +251,13 @@ export function outlineAt(sec, wide = 1) {
     if (sec.arch.y > sec.low.top + 1e-6 && sec.arch.y <= sec.spring + 1e-6) o.lowR = sec.arch.r;
   }
   return o;
+}
+
+/** How much higher the vault stands where the bore is `wide` lines wide (tunnel.c vault_up): by the square root of
+ *  it, at most VAULT_UP (5.18g: the Ceneri base tunnel's junction rose to 9.6 m where its tubes are 6.5 m). */
+export const VAULT_UP = 1.15;
+export function vaultUp(wide) {
+  return Math.min(Math.sqrt(Math.max(wide, 0)), VAULT_UP);
 }
 
 /* A loop builder: points in order with the material of the edge leaving each, and creases. */

@@ -2315,12 +2315,13 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (!wall(sBranchW, bwW(-0.05, 0, 801), 800)) problems.push('the branch\'s end cap over the main\'s floor is drawn');
   if (wall(sBranchW, bwW(-0.05, 3.7, 800.15), 800)) problems.push('the branch\'s end cap under the main\'s walkway is left out (the room under it open)');
   // A bored tube twice as wide (sections.js circle, 5.17n): its lower half is not stretched up (tunnel.c placed), a
-  // point 7 m across and 2 m under the arch's middle is outside it (5.17m's outline, stretched there too: inside).
+  // point 7 m across and 1.6 m under the arch's middle is outside it (5.17m's outline, stretched there too: inside;
+  // 2 m under until 5.18g capped the vault's rise at 15%).
   {
     const { circle, outlineAt } = await import('../js/engine/tunnels/sections.js');
     const cs = circle({ diameter: 7.8, floor: 2.9, walkway: 1.1, kerb: 0.45 }), o = outlineAt(cs, 2);
     const piece = [0, 0, 0, o.half, 0, 10, 0, o.half, o.top, o.archY, o.archA, o.archH, o.top, o.archY, o.archA, o.archH, o.inner, o.inner, o.kerb, o.lowR];
-    const r = cutAt(piece, 0, 7, 5, o.archY - 2, -0.1, 0.99), r0 = cutAt([...piece.slice(0, 19), 0], 0, 7, 5, o.archY - 2, -0.1, 0.99);
+    const r = cutAt(piece, 0, 7, 5, o.archY - 1.6, -0.1, 0.99), r0 = cutAt([...piece.slice(0, 19), 0], 0, 7, 5, o.archY - 1.6, -0.1, 0.99);
     if (!(o.lowR > 3.8) || r[1] || !r0[1]) problems.push(`a wide bored tube's lower half: lowR ${o.lowR}, inside ${r[1]} (stretched ${r0[1]})`);
   }
   // A branch leaving a railway's bore at 5° (groups.js): beside it for its first 230 m (one bore, as wide as both),

@@ -11,6 +11,7 @@
 import { TUBE_POINT } from './groups.js';
 import { placeOn } from './trace.js';
 import { CUT_PAST } from './cuts.js';
+import { vaultUp } from './sections.js';
 
 /* Metres between the floor's samples (a long tube's at most FLOOR_MOST of them; linear between: a dip under a crossing
  * tube is tens of metres long, so the error is well under a millimetre). */
@@ -136,7 +137,7 @@ export class TubeQuery {
       const fe = s < 0 ? f[0] : s > L ? f[1] : null;
       const floor = t.floorAt(s) + (fe ? fe.rise * (s < 0 ? -s : s - L) : 0);
       // Its outline as drawn here (sections.js outlineAt, written out: no object a call).
-      const wide = half / sec.half, root = Math.sqrt(wide);
+      const wide = half / sec.half, root = vaultUp(wide);
       const wallTop = sec.low.top > sec.spring ? sec.spring + (sec.low.top - sec.spring) * root : sec.low.top;
       const archA = sec.arch ? sec.arch.r * wide : 0, archH = sec.arch ? sec.arch.r * root : 0;
       const archY = sec.arch ? sec.spring + (sec.arch.y - sec.spring) * root : 0;

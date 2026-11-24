@@ -48,7 +48,7 @@ import { geodeticToEcef } from '../../core/math.js';
 import { GroundPoints } from '../terrain/ground-points.js';
 import { TUBE_END, TUBE_POINT, LINE_FLOATS, LINE_MOST } from './groups.js';
 import { placeOn } from './trace.js';
-import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, lookFor, LOOK, MATERIAL } from './sections.js';
+import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, lookFor, vaultUp, LOOK, MATERIAL } from './sections.js';
 import { meshPoints, spineOf, middleAt, boreWide, MESH_END, POINT_DOUBLES, HEAD_N, CUT_FOOT } from './mesh.js';
 import { fitPoints, fitTube, SHORT, COLLAR_WIDTH } from './fit.js';
 import { boreCut, addAprons, boreMeets } from './cuts.js';
@@ -1338,7 +1338,7 @@ function meshSphere(mp, sec, collar) {
   const center = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
   let radius = 0;
   for (const e of pts) radius = Math.max(radius, Math.hypot(e[0] - center[0], e[1] - center[1], e[2] - center[2]));
-  const reach = Math.hypot(sec.half * widest + offset, sec.height * Math.sqrt(widest)) + collar + 2;
+  const reach = Math.hypot(sec.half * widest + offset, sec.height * vaultUp(widest)) + collar + 2;
   return { center, radius: radius + reach };
 }
 

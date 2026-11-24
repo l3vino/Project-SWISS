@@ -290,9 +290,18 @@ __attribute__((noinline)) static Frame frame_of(const Ring *R) {
  * by its square root; normals by the inverse of that stretch). */
 typedef struct { double a, h, na, nh; } Placed;
 
+/* How much higher the vault stands where the bore is `wide` lines wide: by the square root of it, at most VAULT_UP
+ * (5.18g: a round tube stretched as wide as its floor needs for the tracks beside it, 3.2 times, rose 1.8 times: the
+ * Ceneri base tunnel's junction 9.6 m high where its tubes are 6.5 m). sections.js outlineAt and tunnel.wgsl the same. */
+#define VAULT_UP 1.15
+static double vault_up(double wide) {
+  const double s = m_sqrt(wide);
+  return s < VAULT_UP ? s : VAULT_UP;
+}
+
 __attribute__((noinline)) static Placed placed(const Ring *R, double spring, float a, float h, float na, float nh) {
   Placed p;
-  double sa = R->wide > 0.05 ? R->wide : 1.0, sh = h > spring ? m_sqrt(sa) : 1.0;
+  double sa = R->wide > 0.05 ? R->wide : 1.0, sh = h > spring ? vault_up(sa) : 1.0;
   p.a = R->off + a * sa;
   p.h = h > spring ? spring + (h - spring) * sh : h;
   /* The walkways give way where the bore is stretched for a line beside it (5.17q, walkway_at): what stands on the
@@ -782,7 +791,7 @@ static void luminaires(Out *o, const Ring *rings, u32 nring, double spring, doub
     ring_lerp(&R, A, B, ds > 1e-9 ? (s - A->s) / ds : 0);
     Frame F = frame_of(&R);
     way = F.along; boreOff = R.off; boreWide = R.wide > 0.05 ? R.wide : 1.0;
-    const double a = R.off + a0 * boreWide, h = ceil > 0 || h0 <= spring ? h0 : spring + (h0 - spring) * m_sqrt(boreWide);
+    const double a = R.off + a0 * boreWide, h = ceil > 0 || h0 <= spring ? h0 : spring + (h0 - spring) * vault_up(boreWide);
     box_sides(o, &R, F, a, 0.17, 0.5 * size, h - 0.11, h + 0.05, s);
     V3 down = scale(F.up, -1.0);
     const u32 b = o->nv;

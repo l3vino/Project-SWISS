@@ -128,7 +128,7 @@ fn vs(@location(0) position : vec3f, @location(1) normal : vec4f, @location(2) a
   // The lamps' place, stretched with the bore as the mesh stretches its section (tunnel.c, placed).
   let middle = bore.x * 64.0;
   let wide = 1.0 + bore.y * 16.0;
-  let up = select(tube.lamp.y, tube.spring + (tube.lamp.y - tube.spring) * sqrt(wide), tube.lamp.y > tube.spring);
+  let up = select(tube.lamp.y, tube.spring + (tube.lamp.y - tube.spring) * min(sqrt(wide), 1.15), tube.lamp.y > tube.spring);
   out.lamp = vec2f(middle + tube.lamp.x * wide, up);
   out.bore = vec2f(middle, wide);
   return out;
