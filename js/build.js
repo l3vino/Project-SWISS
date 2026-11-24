@@ -7,4 +7,4 @@
  * tools/manifest.mjs checks the two agree and lists every file of the app in
  * files.json, which index.html revalidates before anything runs.
  */
-export const BUILD = '5.18f';
+export const BUILD = '5.18g';

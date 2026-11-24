@@ -118,6 +118,8 @@ const JOIN_NEAR = 1, JOIN_EASE = 40;
 /* Metres a near tube's JOIN end and its whole tunnel's may lie apart and be the same (5.17t: by Giubiasco 23 m), and
  * its portal and a whole tunnel's end that is not one (at Vezia 74 m). */
 const JOIN_MATCH = 60, PORTAL_MATCH = 100;
+/* Metres a tube's line may pass a JOIN end of another and lend it its table entry (#joinedEntry, 5.18g). */
+const JOIN_ENTRY = 25;
 const GROUNDS_MOST = 256;
 /* The Web Mercator zoom a mesh's positions on the map are in (the pass scales them to the photos'). */
 const MESH_ZOOM = 20;
@@ -403,7 +405,13 @@ export class TunnelSet {
     if (open.length && !r.whole && !r.traced) return;   // the far portal is still being looked for
     // 2. Its portals' heights, and the ground along it and round its portals for its fit.
     const whole = r.whole ?? near;
-    r.entry ??= r.whole ? tableEntry(whole) : null;
+    // Its entry in the table of the longest tunnels (sections.js): by its portals or its whole's length, else that of a
+    // tube it opens into (5.18g: the Ceneri base tunnel's crossover and west tube have no portal of their own, and were
+    // drawn as old masonry with ballast while the tubes they open into were concrete); its section made again with it.
+    if (!r.entry) {
+      const entry = tableEntry(whole) ?? (whole !== near ? tableEntry(near) : null) ?? this.#joinedEntry(r);
+      if (entry) { r.entry = entry; r.rule = null; }
+    }
     // A short whole tunnel must fit under the ground (one whose far end was not found is not known to be short).
     const short = Boolean(r.whole) && whole.length <= SHORT;
     const heights = [NaN, NaN];
@@ -517,6 +525,23 @@ export class TunnelSet {
       this.#joinTo(r, q);
       this.#joinTo(q, r);
     }
+  }
+
+  /* The table entry of a tube one of record r's JOIN ends opens into (5.18g), or null: the first with one whose line
+   * passes within JOIN_ENTRY metres of that end. */
+  #joinedEntry(r) {
+    for (const end of r.tube.ends) {
+      if (end.type !== TUBE_END.JOIN) continue;
+      const mLon = 111320 * Math.cos((end.lat * Math.PI) / 180);
+      for (const q of this.records.values()) {
+        if (q === r || !q.entry || q.tube.family !== r.tube.family) continue;
+        const p = q.tube.points;
+        for (let k = 0; k < p.length; k += TUBE_POINT) {
+          if (Math.hypot((p[k] - end.lon) * mLon, (p[k + 1] - end.lat) * 111132) <= JOIN_ENTRY) return q.entry;
+        }
+      }
+    }
+    return null;
   }
 
   /* The floor of the tube a JOIN end of record r opens into, there (its fitted floor), or null: none placed, or the

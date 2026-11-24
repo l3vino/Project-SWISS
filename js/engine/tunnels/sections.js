@@ -36,7 +36,7 @@
  * (outlineAt; tunnels/cuts.js, terrain.wgsl inBore).
  */
 
-import { TUBE_POINT } from './groups.js';
+import { TUBE_POINT, TUBE_END } from './groups.js';
 
 export const MATERIAL = { FLOOR: 1, WALKWAY: 2, WALL: 3, VAULT: 4, COLLAR: 5, DARK: 6, CEILING: 7 };
 /* Floats per cross-section point: across, up, material, crease. */
@@ -61,7 +61,10 @@ export const TUNNEL_TABLE = [
   { name: 'Gotthard Road Tunnel', family: 1, length: 16942, mid: [8.596, 46.600], year: 1980, section: 'road', ceiling: true,
     portals: { north: 1080, south: 1146 }, top: { h: 1175, from: 'north', at: 8000 } },
   { name: 'Furka Base Tunnel', family: 2, length: 15407, mid: [8.43, 46.56], year: 1982, section: 'metre', top: null },
-  { name: 'Ceneri Base Tunnel', family: 2, length: 15400, mid: [8.96, 46.10], year: 2020, section: 'tube', top: null },
+  // Its portals (5.18g, from the data's own portal ends: Vigana's two tubes, and Vezia), so that every tube of it is
+  // known by them, however much of it was traced (15,000 m junction to junction one day, 15,4xx m another).
+  { name: 'Ceneri Base Tunnel', family: 2, length: 15400, mid: [8.96, 46.10], year: 2020, section: 'tube', top: null,
+    portalsAt: [[8.98649, 46.15639], [8.98602, 46.15616], [8.9345, 46.0267]] },
   // Double track, 8.0 m wide, 7.1 m high: what the rules make of the data's two tracks 3.2 m apart (8.2 × 7.1 m).
   { name: 'Gotthard Rail Tunnel', family: 2, length: 15003, mid: [8.596, 46.596], year: 1882, section: null,
     portals: { north: 1106, south: 1142 }, top: { h: 1151, from: 'north', at: 8000 } },
@@ -75,15 +78,21 @@ const MAIN = new Set(['motorway', 'trunk', 'primary', 'secondary']);
 /* Metres over a cut-and-cover box's inside its roof slab and the soil on it take. */
 export const ROOF = 0.6;
 
+/* Metres a tube's portal may lie from a table entry's (portalsAt) and be one of its. */
+const PORTAL_NEAR = 300;
+
 /**
- * The table's entry for a whole tunnel (its length and middle), or null.
- * @param tube  groups.js tube, traced from portal to portal
+ * The table's entry for a tube, or null: by a portal of its own where the entry lists its portals (5.18g), else, for
+ * a whole tunnel traced from portal to portal, by its length and middle.
+ * @param tube  groups.js tube
  */
 export function tableEntry(tube) {
   const p = tube.points, n = p.length / TUBE_POINT, mid = Math.floor(n / 2) * TUBE_POINT;
   const lon = p[mid], lat = p[mid + 1];
   for (const e of TUNNEL_TABLE) {
     if (e.family !== tube.family) continue;
+    if (e.portalsAt && (tube.ends ?? []).some((end) => end.type === TUBE_END.PORTAL && e.portalsAt.some(([x, y]) =>
+      Math.hypot((end.lon - x) * 111320 * Math.cos((y * Math.PI) / 180), (end.lat - y) * 111132) <= PORTAL_NEAR))) return e;
     if (Math.abs(tube.length - e.length) > Math.max(150, e.length * 0.02)) continue;
     const dx = (lon - e.mid[0]) * 111320 * Math.cos((lat * Math.PI) / 180), dy = (lat - e.mid[1]) * 111132;
     if (Math.hypot(dx, dy) <= 8000) return e;
