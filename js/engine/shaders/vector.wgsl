@@ -227,7 +227,7 @@ fn vectorDebug(merc : vec2f, dmx : vec2f, dmy : vec2f, base : vec3f) -> vec3f {
 // only in the data view (vectorDebug).
 //
 // Made surfaces are drawn out to where a screen pixel covers about a
-// fifth of a metre of ground, and nothing at all past 35 cm (5.18f), so
+// quarter of a metre of ground, and nothing at all past half a metre, so
 // the cost is all near the camera, and forests and fields with no road in
 // their grid cell cost one look-up.
 //
@@ -489,16 +489,15 @@ fn vtTrack(px : RoadPixel, g : RoadGroup, colour : vec3f, gauge : f32, fw : f32)
 }
 
 // How much of the roads to draw at a pixel: x, the made surfaces (a screen
-// pixel covering under a fifth of a metre of ground across its shorter
-// side, none past 35 cm), y, the photo's own detail (its pixels, at
+// pixel covering under a quarter of a metre of ground across its shorter
+// side, none past half a metre), y, the photo's own detail (its pixels, at
 // the zoom it came from, over that side: twice or more, all of it). Both 0
 // where there is no road tile or nothing in the pixel's cell. Cheap: the
 // caller samples the blurred photo only where x is above 0.
 fn vectorReach(merc : vec2f, dmx : vec2f, dmy : vec2f, photo : ImagerySample) -> vec2f {
   if ((vtInfo.enabled & VT_ON) == 0u || (vtInfo.enabled & (VT_LAYER_ROADS | VT_LAYER_PATHS)) == 0u) { return vec2f(0.0); }
   let shortest = max(min(length(dmx), length(dmy)), 1e-6);
-  // (5.18f: 0.25 to 0.5 m until then, ~620 m out on his laptop's screen; the photo shows the roads past ~430 m.)
-  let reach = 1.0 - smoothstep(0.2, 0.35, shortest * vtMetresPerRef());
+  let reach = 1.0 - smoothstep(0.25, 0.5, shortest * vtMetresPerRef());
   if (reach <= 0.0) { return vec2f(0.0); }
   let texel = select(exp2(f32(vtInfo.zRef) - photo.level), 1e6, photo.found <= 0.0);
   var level : u32;
