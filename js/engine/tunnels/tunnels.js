@@ -576,8 +576,10 @@ export class TunnelSet {
         // (Its near tube's own JOIN end there first: groups.js runs it JOIN_INTO back into the bore it opens into.)
         const ne = q.tube.ends.find((n) => n.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH) ?? we;
         for (const r of rails) {
-          if (r === q || !r.section) continue;
-          const at = this.#inBoreOf(r, ne.lon, ne.lat);
+          // (Its section as fitted, or the rule it starts from: one being fitted again keeps its links meanwhile.)
+          const half = r.section?.half ?? r.rule?.half;
+          if (r === q || !half) continue;
+          const at = this.#inBoreOf(r, ne.lon, ne.lat, half);
           if (!at) continue;
           const w = r.wholeAt ?? { s0: 0, sign: 1 };
           links.push({ from: q.tube.key, end: e, to: r.tube.key, s: w.s0 + w.sign * at.s });
@@ -662,11 +664,11 @@ export class TunnelSet {
   }
 
   /* Where a point lies along record q's tube if it is inside its bore (within JOIN_NEAR of its walls), else null. */
-  #inBoreOf(q, lon, lat) {
+  #inBoreOf(q, lon, lat, half = q.section.half) {
     const box = lineBox(q.tube.points), m = 30 / 111132;
     if (lon < box[0] - 2 * m || lon > box[2] + 2 * m || lat < box[1] - m || lat > box[3] + m) return null;
     const at = placeOn(q.tube, lon, lat);
-    const inside = Math.abs(at.across - at.middle) <= q.section.half + at.extra + JOIN_NEAR && at.s >= 0 && at.s <= q.tube.length;
+    const inside = Math.abs(at.across - at.middle) <= half + at.extra + JOIN_NEAR && at.s >= 0 && at.s <= q.tube.length;
     return inside ? at : null;
   }
 
@@ -1291,7 +1293,7 @@ export class TunnelSet {
         with: this.meshes.find((m) => m.cutIndex === other)?.record.tube.key ?? null, pieces: pieces.length })) : [],
     }));
     return {
-      ...this.stats, enabled: this.enabled, bytes: this.gpuBytes, tubes,
+      ...this.stats, enabled: this.enabled, bytes: this.gpuBytes, tubes, railNet: this.railNet.size,
       // The whole tunnels traced (#runTrace), which tubes take as theirs (offWhole).
       wholes: this.wholes.map((w) => ({ key: w.key, length: Math.round(w.length), ends: w.ends.map((e) => [e.type, Math.round(e.lat * 1e5) / 1e5, Math.round(e.lon * 1e5) / 1e5]) })),
       // The tubes gone but still drawn until one taking their place is (retiring).
