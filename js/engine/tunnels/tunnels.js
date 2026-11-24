@@ -1133,7 +1133,9 @@ export class TunnelSet {
    * The railway tubes' lines within `within` metres of a point (5.18g, the console's swissgpu.lines): per tube, each
    * spine sample there as its mesh runs (mesh.js spineOf: smoothed as the tracks are drawn on it) and as found
    * (groups.js), with the tracks' offsets right of it (the spine's own 0 first; NaN where one does not run).
-   * @returns [{ key, length, ends, samples: [[s, lon, lat, lonRaw, latRaw, ...offsets]] }]
+   * And per sample the bore's middle right of the spine and how much wider than one line it is (its half-width over
+   * the section's: where tunnel.c tracks_at keeps the tracks off the kerbs); per tube its section's half-widths.
+   * @returns [{ key, length, ends, half, floorHalf, samples: [[s, lon, lat, lonRaw, latRaw, middle, wide, ...offsets]] }]
    */
   linesNear(lon, lat, within) {
     const out = [], mLon = 111320 * Math.cos((lat * Math.PI) / 180);
@@ -1144,12 +1146,16 @@ export class TunnelSet {
       const samples = [];
       for (let k = 0, i = 0; k < p.length; k += TUBE_POINT, i++) {
         if (Math.hypot((p[k] - lon) * mLon, (p[k + 1] - lat) * 111132) > within) continue;
-        const row = [Math.round(p[k + 2] * 10) / 10, drawn[k], drawn[k + 1], p[k], p[k + 1]];
+        const row = [Math.round(p[k + 2] * 10) / 10, drawn[k], drawn[k + 1], p[k], p[k + 1],
+          Math.round(p[k + 3] * 100) / 100, Math.round(((half + p[k + 4]) / half) * 1000) / 1000];
         const n = L[i * LINE_FLOATS];
         for (let j = 0; j < Math.min(n, LINE_MOST); j++) row.push(Math.round(L[i * LINE_FLOATS + 1 + j] * 100) / 100);
         samples.push(row);
       }
-      if (samples.length) out.push({ key: t.key, length: Math.round(t.length), ends: t.ends.map((e) => [e.type, e.lon, e.lat]), samples });
+      if (samples.length) {
+        out.push({ key: t.key, length: Math.round(t.length), ends: t.ends.map((e) => [e.type, e.lon, e.lat]), half,
+          floorHalf: r.section?.low?.inner ?? r.section?.low?.half ?? null, samples });
+      }
     }
     return out;
   }
