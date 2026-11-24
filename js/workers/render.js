@@ -63,7 +63,9 @@ const uploads = new UploadQueue(2);
  * 'maintain' (tidying the streamers' trees and lists) are measured inside the
  * terrain and building updates and carved out of them. */
 const profiler = new Profiler(['physics', 'uploads', 'view', 'terrain', 'buildings', 'evict', 'maintain',
-  'ground', 'imagery', 'vector', 'tunnels', 'requests', 'draw', 'submit']);
+  'ground', 'imagery', 'vector', 'tunnels', 'requests', 'draw', 'submit',
+  // Inside 'draw' (5.18f): each pass's update and recording (frame.js add).
+  'draw air', 'draw sky', 'draw terrain', 'draw tunnels', 'draw buildings', 'draw cables', 'draw path', 'draw labels']);
 /* Reused every frame rather than allocated. */
 const viewParams = { viewHeight: 1, fovY: FOV_Y, aspect: 1, near: 0.1 };
 const imageryParams = { aboveGround: 0, viewHeight: 1, fovY: FOV_Y, reach: 20000 };
@@ -322,15 +324,15 @@ rpc.on('init', async ({ canvas, wasmModule, settings, size, camera: startCamera 
   frameUniforms = new FrameUniforms(device);
   const atmosphere = await Atmosphere.create(device, frameUniforms, frame.timer);
   frameUniforms.attach(atmosphere);
-  frame.add(atmosphere);
-  frame.add(await SkyPass.create(device, { format: caps.format, timer: frame.timer, frame: frameUniforms }));
+  frame.add(atmosphere, 'draw air');
+  frame.add(await SkyPass.create(device, { format: caps.format, timer: frame.timer, frame: frameUniforms }), 'draw sky');
   terrainPass = frame.add(await TerrainPass.create(device, {
     format: caps.format, timer: frame.timer, terrain, imagery, vector, tunnels, frame: frameUniforms, view,
-  }));
+  }), 'draw terrain');
   terrainPass.trackReach = trackReachOf(settings);
   tunnelsPass = frame.add(await TunnelsPass.create(device, {
     format: caps.format, timer: frame.timer, tunnels, view, imagery, vector, frame: frameUniforms,
-  }));
+  }), 'draw tunnels');
 
   // Every adapter's building layer. Their tileset descriptions load in the
   // background: the terrain does not wait for buildings to appear.
@@ -364,14 +366,14 @@ rpc.on('init', async ({ canvas, wasmModule, settings, size, camera: startCamera 
   buildingsPass = frame.add(await BuildingsPass.create(device, {
     format: caps.format, timer: frame.timer, tilesets: buildings, imagery, vector, frame: frameUniforms,
     features, materials: await createMaterialLibrary(device), tunnels,
-  }));
+  }), 'draw buildings');
   // Cable cars come in the same tiles, as ropes and pylons.
   cablesPass = frame.add(await CablesPass.create(device, {
     format: caps.format, timer: frame.timer, tilesets: buildings, frame: frameUniforms,
-  }));
+  }), 'draw cables');
   // A search flight's path, in the world, and its destination's name over everything.
-  pathPass = frame.add(await PathPass.create(device, { format: caps.format, timer: frame.timer, frame: frameUniforms }));
-  labelPass = frame.add(await LabelPass.create(device, { format: caps.format, timer: frame.timer, frame: frameUniforms }));
+  pathPass = frame.add(await PathPass.create(device, { format: caps.format, timer: frame.timer, frame: frameUniforms }), 'draw path');
+  labelPass = frame.add(await LabelPass.create(device, { format: caps.format, timer: frame.timer, frame: frameUniforms }), 'draw labels');
 
   applySettings(settings);
   frame.resize(size.width, size.height, size.dpr);

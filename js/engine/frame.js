@@ -64,7 +64,13 @@ export class Frame {
     this.startTime = performance.now();
   }
 
-  add(pass) { this.passes.push(pass); return pass; }
+  /** A pass drawn each frame, in the order added; `section`: the profiler's section its CPU time is charged to (5.18f:
+   *  inside 'draw', each pass's own update and recording, so a spike has a name). */
+  add(pass, section = null) {
+    pass.profileAs = section;
+    this.passes.push(pass);
+    return pass;
+  }
 
   /** CSS pixels from the page, multiplied by the render scale for the backbuffer. */
   resize(cssWidth, cssHeight, dpr = 1) {
@@ -174,8 +180,10 @@ export class Frame {
     const payload = Object.assign(this.payload, this.shared);
     payload.width = this.width; payload.height = this.height; payload.time = time; payload.dt = dt;
     for (const pass of this.passes) {
+      const t0 = prof && pass.profileAs ? performance.now() : 0;
       pass.update?.(payload);
       pass.record(encoder, colorView, this.depthView);
+      if (t0) prof.carve(pass.profileAs, performance.now() - t0);
     }
     prof?.lap('draw');
 
