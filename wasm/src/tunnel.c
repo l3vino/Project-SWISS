@@ -484,6 +484,7 @@ static void span_of(Span *S, const Ring *rings, u32 nring, u32 end, double len) 
 #define BED_HALF 1.4
 #define BED_NONE 9.0        /* a bed's neighbour where there is none: farther than its sleepers reach */
 #define MERGED 0.25         /* metres two tracks' middles may be apart and be one (a switch's points: rails()) */
+#define JOIN_TRACKS 20.0    /* metres from a JOIN end with no track: inside the bore it opens into (groups.js JOIN_INTO) */
 #define FAN_R 0.56          /* a jet fan: 1.1 m across, 4 m long */
 #define FAN_HALF 2.0
 #define FAN_UNDER 0.35      /* metres between a fan and the vault over it */
@@ -642,6 +643,13 @@ static void rails(Out *o, const Ring *rings, u32 nring, double gauge, u32 end0, 
     const double top = foot + (flush ? 0.004 : RAIL_HIGH);
     /* (A track not running here keeps its vertices, at the line, unjoined: each keeps its place in the ring.) */
     for (u32 t = 0; t < n; t++) { has[t] = at[t] == at[t]; if (!has[t]) at[t] = 0.0; }
+    /* A JOIN end's first JOIN_TRACKS metres lie in the bore it opens into (groups.js JOIN_INTO: its walls reach into
+     * that room), whose own track for this line runs on to where the line leaves it: none here, so the two do not lie
+     * side by side, beds merged into one slab (5.18g: the Ceneri base tunnel's crossover beside the main tube's track
+     * for the same line, 16 m long). */
+    if ((end0 == END_JOIN && R->s - rings[0].s < JOIN_TRACKS) || (end1 == END_JOIN && rings[nring - 1u].s - R->s < JOIN_TRACKS)) {
+      for (u32 t = 0; t < n; t++) has[t] = 0;
+    }
     /* At a switch's points two lines are one track (5.18g: the Ceneri base tunnel's east line runs into the main one
      * over 100 m, and the last metres of it drew its rails and bed a hand's width from the other's, fighting for the
      * same pixels): a track within MERGED of an earlier one in the ring (the spine's own first) is that one's there. */
