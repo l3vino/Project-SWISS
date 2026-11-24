@@ -393,6 +393,7 @@ export class TunnelSet {
     return {
       tube, kind, whole: null, wholeAt: null, traceWanted: false, traceHost: '', traced: false,
       rule: null, section: null, fit: null, skipped: false, entry: null, sig: '', meshWanted: false, meshBusy: false, mesh: null, failed: 0,
+      behind: false,   // its placing changed while its mesh was made (#advance)
     };
   }
 
@@ -480,7 +481,11 @@ export class TunnelSet {
     // (And where the ground as cut has its tubes start at most: trimStarts.)
     const starts = near.ends.map((n) => (n.type === TUBE_END.PORTAL ? this.starts.get(portalKey(n, near.family)) : undefined));
     const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}`;
-    if (sig === r.sig || r.meshBusy) return;
+    if (sig === r.sig) return;
+    // (One whose mesh is still being made is placed again once that is in: #mesh leaves it unsettled. 5.18h: the
+    // Ceneri west tube's stations came while its first mesh was made, and it kept its level floor.)
+    if (r.meshBusy) { r.behind = true; return; }
+    r.behind = false;
     r.sig = sig;
     if (near.family === 2) this.railDirty = true;
     const at = r.wholeAt ?? { s0: 0, sign: 1 };
@@ -1076,8 +1081,9 @@ export class TunnelSet {
       if (this.records.get(near.key) !== r || r.sig !== sig) { this.sink.unused(mesh); return; }
       this.#setMesh(r, mesh);
       this.stats.meshMs = performance.now() - t0;
-      // Nothing it waits for any more: its whole tunnel, its portals' ground and its mesh are in.
-      r.settled = r.sig === sig;
+      // Nothing it waits for any more: its whole tunnel, its portals' ground and its mesh are in (and nothing changed
+      // while it was made: #advance).
+      r.settled = r.sig === sig && !r.behind;
     } catch (err) {
       if (err.name !== 'AbortError') {
         r.failed++;
