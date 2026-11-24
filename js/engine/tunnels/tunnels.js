@@ -49,7 +49,7 @@ import { GroundPoints } from '../terrain/ground-points.js';
 import { TUBE_END, TUBE_POINT, LINE_FLOATS, LINE_MOST } from './groups.js';
 import { placeOn } from './trace.js';
 import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, lookFor, LOOK, MATERIAL } from './sections.js';
-import { meshPoints, spineOf, middleAt, MESH_END, POINT_DOUBLES, HEAD_N, CUT_FOOT } from './mesh.js';
+import { meshPoints, spineOf, middleAt, boreWide, MESH_END, POINT_DOUBLES, HEAD_N, CUT_FOOT } from './mesh.js';
 import { fitPoints, fitTube, SHORT, COLLAR_WIDTH } from './fit.js';
 import { boreCut, addAprons, boreMeets } from './cuts.js';
 import { placedCopy, wingOff, WING_SPLAY, WING_LEN } from './placed.js';
@@ -885,7 +885,7 @@ export class TunnelSet {
       // 5.17e started it at the portal as mapped, its roof and concrete out of the ground for its first metres).
       const f = r.fit.ends;
       const from = f[0]?.start ?? 0, to = near.length - (f[1]?.start ?? 0);
-      const mp = meshPoints(near, r.floorAt, sec.half, zoom, from, to);
+      const mp = meshPoints(near, r.floorAt, sec.half, zoom, from, to, sec.low?.half ?? 0);
       const o = mp.origin, origin = geodeticToEcef(o.lon, o.lat, o.h);
       const ends = near.ends.map(meshEnd);
       // No wing walls (5.17d): the road's own cut holds the slope beside the approach (shape.c, pinned at the portal).
@@ -924,7 +924,7 @@ export class TunnelSet {
         if (!fe || near.ends[e].type !== TUBE_END.PORTAL || cuttings[e]) continue;
         const sTube = e === 0 ? from : to, rise = fe.rise ?? 0, h = r.floorAt(sTube);
         if ((fe.start ?? 0) - collar >= APRON_LEAST) {
-          aprons.push(meshPoints(near, (s) => h + rise * Math.abs(s - sTube), sec.half, zoom, e === 0 ? 0 : to + collar, e === 0 ? from - collar : near.length));
+          aprons.push(meshPoints(near, (s) => h + rise * Math.abs(s - sTube), sec.half, zoom, e === 0 ? 0 : to + collar, e === 0 ? from - collar : near.length, sec.low?.half ?? 0));
         }
         // And APRON_OUT on out of the portal as mapped (5.17r): the ground there is the tracks' bed, drawn as the
         // floor is (the photo showed the real portal's shadow and walls there, a dark pit in front of the Ceneri tube
@@ -1147,7 +1147,7 @@ export class TunnelSet {
       for (let k = 0, i = 0; k < p.length; k += TUBE_POINT, i++) {
         if (Math.hypot((p[k] - lon) * mLon, (p[k + 1] - lat) * 111132) > within) continue;
         const row = [Math.round(p[k + 2] * 10) / 10, drawn[k], drawn[k + 1], p[k], p[k + 1],
-          Math.round(p[k + 3] * 100) / 100, Math.round(((half + p[k + 4]) / half) * 1000) / 1000];
+          Math.round(p[k + 3] * 100) / 100, Math.round(boreWide(half, p[k + 4], r.section?.low?.half ?? 0) * 1000) / 1000];
         const n = L[i * LINE_FLOATS];
         for (let j = 0; j < Math.min(n, LINE_MOST); j++) row.push(Math.round(L[i * LINE_FLOATS + 1 + j] * 100) / 100);
         samples.push(row);

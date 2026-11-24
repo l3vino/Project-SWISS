@@ -24,6 +24,8 @@ const TURN = 0.012;        // radians
 const SHIFT = 0.08;        // metres
 const BEND = 0.08;         // metres the floor strays from its grade at the last point kept
 const KEEP_MOST = 40;      // metres
+/* Metres a track's middle stays in from the edge of the floor (tunnel.c TRACK_EDGE: half a sleeper and some). */
+const TRACK_EDGE = 1.5;
 const EQUATOR = 2 * Math.PI * 6378137;
 
 /**
@@ -33,9 +35,12 @@ const EQUATOR = 2 * Math.PI * 6378137;
  * @param half     one line's half-width of the cross-section (sections.js), metres
  * @param zoom     the imagery reference zoom the Mercator positions are in
  * @param from, to metres along the tube the mesh covers
+ * @param floorHalf  the section's half-width at its floor (sections.js low.half), metres: where it is narrower than
+ *                 the section (a bored tube's round floor), the bore stretched for lines beside it is made as wide as
+ *                 its floor needs to hold their outermost tracks (0: as the walls need only)
  * @returns { points: Float64Array (POINT_DOUBLES each), count, origin: { lon, lat, h, mx, my } }
  */
-export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity) {
+export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, floorHalf = 0) {
   const p = smoothed(tube.points, half), n = p.length / TUBE_POINT, world = worldPixels(zoom);
   const dirAt = (k) => {
     const a = Math.max(0, k - 1) * TUBE_POINT, b = Math.min(n - 1, k + 1) * TUBE_POINT;
@@ -102,12 +107,23 @@ export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity) {
     out[w + 5] = mercY(lat) * world - origin.my;
     out[w + 6] = world / (EQUATOR * Math.cos((lat * Math.PI) / 180));
     out[w + 7] = p[o + 3];
-    out[w + 8] = (half + p[o + 4]) / half;
+    // How wide against one line: as its walls need to reach round its lines (groups.js: half their span either side of
+    // the bore's middle), and as its floor needs to hold the outermost tracks TRACK_EDGE in from its edge (5.18g: a round
+    // tube stretched only as wide as the walls need kept the Ceneri base tunnel's outer tracks 1.7 m in from their
+    // lines, tunnel.c tracks_at: the east one a hand's width from the main one, rail by rail).
+    out[w + 8] = boreWide(half, p[o + 4], floorHalf);
     // Its lines: how many, and each, metres right of the spine in order (one, the spine's, where none are known).
     out[w + 9] = L ? L[k * LINE_FLOATS] : 1;
     for (let i = 0; i < LINE_MOST; i++) out[w + 10 + i] = L ? L[k * LINE_FLOATS + 1 + i] : 0;
   });
   return { points: out, count: keep.length, origin };
+}
+
+/** How wide a bore is against one line (its walls scaled out, sections.js outlineAt), where its lines spread `spread`
+ *  metres either side of its middle: as its walls need round them, and as its floor (`floorHalf` one line's, 0 the
+ *  walls' own) needs to hold the outermost tracks TRACK_EDGE in from its edge. */
+export function boreWide(half, spread, floorHalf = 0) {
+  return Math.max((half + spread) / half, floorHalf > 0 && spread > 0.05 ? (spread + TRACK_EDGE) / floorHalf : 0);
 }
 
 /* The spine smoothed over a stretch as long as the bore is wide there and
