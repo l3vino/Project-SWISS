@@ -111,10 +111,15 @@ const M_LAT = 111132;
  */
 export function tubesFrom(runs, priority = {}, hints = []) {
   if (!runs.length) return [];
-  // A local frame in metres round the runs' middle.
-  let lon0 = 0, lat0 = 0, np = 0;
-  for (const r of runs) for (let i = 0; i < r.points.length; i += 2) { lon0 += r.points[i]; lat0 += r.points[i + 1]; np++; }
-  lon0 /= np; lat0 /= np;
+  // A local frame in metres round the middle of the runs' box (not their mean, summed as they came: 5.18j, a tube's
+  // end on its key's 10 m rounding came out under one name or the other by the last bits of the sum).
+  let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+  for (const r of runs) {
+    for (let i = 0; i < r.points.length; i += 2) {
+      w = Math.min(w, r.points[i]); e = Math.max(e, r.points[i]); s = Math.min(s, r.points[i + 1]); n = Math.max(n, r.points[i + 1]);
+    }
+  }
+  const lon0 = (w + e) / 2, lat0 = (s + n) / 2;
   const M_LON = 111320 * Math.cos((lat0 * Math.PI) / 180);
   const frame = { lon0, lat0, M_LON };
 
@@ -171,6 +176,12 @@ export function tubesFrom(runs, priority = {}, hints = []) {
       layer = Math.min(layer, run.layer);
       oneway &&= run.oneway;
       const fwd = ends[e].e === 0;
+      // (Where it goes on from the run before, the two ends as one: their middle, whichever came first; 5.18j, the
+      // first's alone moved a tube's end by up to the metre or two two runs' ends lie apart at a tile's edge.)
+      if (xs.length) {
+        const k0 = fwd ? 0 : run.n - 1, j = xs.length - 1;
+        xs[j] = (xs[j] + run.xs[k0]) / 2; ys[j] = (ys[j] + run.ys[k0]) / 2;
+      }
       for (let k = xs.length ? 1 : 0; k < run.n; k++) { const kk = fwd ? k : run.n - 1 - k; xs.push(run.xs[kk]); ys.push(run.ys[kk]); }
       last = 2 * ends[e].run + (fwd ? 1 : 0);
       const mate = ends[last].mate;
@@ -500,9 +511,14 @@ function boreOf(spine, others, frame, priority) {
     for (let k = 0; k <= n; k++) {
       const best = nearestSample(spine, c.X[k], c.Y[k], BESIDE_ACROSS, found);
       if (best < 0) continue;
-      const dx = c.X[k] - X[best], dy = c.Y[k] - Y[best];
-      if (Math.abs(dx * TX[best] + dy * TY[best]) > BESIDE_ALONG) continue;
-      at[k] = best; acr[k] = dx * TY[best] - dy * TX[best];
+      const dx = c.X[k] - X[best], dy = c.Y[k] - Y[best], along = dx * TX[best] + dy * TY[best];
+      if (Math.abs(along) > BESIDE_ALONG) continue;
+      // How far across it is at the spine's own sample, not at its own up to a metre along from it (5.18j: a line
+      // converging at 5° stepped 0.18 m wherever two of its samples fell by one of the spine's, a kink in its rails):
+      // back along its own way by that much.
+      const runAlong = c.TX[k] * TX[best] + c.TY[k] * TY[best], runAcross = c.TX[k] * TY[best] - c.TY[k] * TX[best];
+      at[k] = best;
+      acr[k] = dx * TY[best] - dy * TX[best] - (Math.abs(runAlong) > 0.5 ? (runAcross / runAlong) * along : 0);
     }
     return { at, acr };
   });
@@ -625,35 +641,45 @@ function turnout(b, parent, kE, dir, steps, ds) {
   const offs = b.offs, inData = (k) => k >= 0 && k <= steps && !Number.isNaN(offs[k]);
   const p0 = parent === null ? 0 : parent.offs[kE];
   const parentAt = (k) => (parent === null ? 0 : Number.isNaN(parent.offs[k]) ? p0 : parent.offs[k]);
-  // How fast the gap closes towards the end of the data, over its last TURNOUT_LOOK metres.
+  const gapOf = (k) => offs[k] - parentAt(k);
+  // Which side it comes from: where its data ends on the other track, the side it came along its last TURNOUT_LOOK m.
   let kB = kE;
   for (let i = 1; i <= Math.round(TURNOUT_LOOK / ds) && inData(kE - dir * i); i++) kB = kE - dir * i;
-  const g0 = offs[kE] - parentAt(kE), gB = offs[kB] - parentAt(kB), run = Math.abs(kE - kB) * ds;
-  // (Which side it comes from: where its data ends on the other track, the side it came along.)
-  const sign = (Math.abs(g0) > TURNOUT_ON ? Math.sign(g0) : Math.sign(gB)) || 1;
-  const closing = run > 0 ? (sign * gB - sign * g0) / run : 0;
-  // The gap x metres on beyond the end of the data (back into it where negative), and how far it is written.
-  let gapAt, from, to;
-  if (closing > TURNOUT_CLOSING) {
-    // Where the two lines meet (x0), and the curve's tangents either side of it: R tan(α/2), α the angle they meet at.
-    const x0 = (sign * g0) / closing, t = Math.min(TURNOUT_TANGENT, (TURNOUT_RADIUS * closing) / 2);
-    gapAt = (x) => (x <= x0 - t ? g0 - sign * closing * x : x >= x0 + t ? 0 : sign * (closing / (4 * t)) * (x0 + t - x) ** 2);
-    from = Math.min(0, x0 - t);
-    to = x0 + t;
+  const sign = (Math.abs(gapOf(kE)) > TURNOUT_ON ? Math.sign(gapOf(kE)) : Math.sign(gapOf(kB))) || 1;
+  // How fast the gap closes towards the end of the data at sample k (metres a metre, from its neighbours in the data).
+  const closingAt = (k) => {
+    const a = inData(k - dir) ? k - dir : k, c = inData(k + dir) ? k + dir : k;
+    return a === c ? 0 : (sign * gapOf(a) - sign * gapOf(c)) / (Math.abs(c - a) * ds);
+  };
+  // Where the curve starts: the sample of the data nearest its end (at most TURNOUT_TANGENT back) whose gap leaves room
+  // for the radius to the other track, tangent to its line there: gap ≥ R s² / 2, s its closing there (where the data
+  // is a curve itself, as by the Ceneri junction, tangent to that curve: a curve started at the angle of its last
+  // metres was kinked 2° where it began). Beyond the data where it stops short of the other track.
+  let k0 = -1, kFar = kE;
+  for (let i = 0; i * ds <= TURNOUT_TANGENT && inData(kE - dir * i); i++) {
+    const k = kE - dir * i, s = closingAt(k);
+    kFar = k;
+    if (s > TURNOUT_CLOSING && sign * gapOf(k) >= (TURNOUT_RADIUS * s * s) / 2) { k0 = k; break; }
+  }
+  if (k0 < 0 && closingAt(kFar) > TURNOUT_CLOSING && sign * gapOf(kFar) > 0) k0 = kFar;   // (a tighter curve: no room)
+  let gapAt, len;
+  if (k0 >= 0) {
+    // From k0: g0 (1 − d / L)², L = 2 g0 / s: tangent to its line at k0 and to the other track at its end.
+    const g0 = sign * gapOf(k0), s = closingAt(k0);
+    len = (2 * g0) / s;
+    gapAt = (d) => sign * g0 * (1 - Math.min(1, d / len)) ** 2;
   } else {
     // Beside it: over and back, two curves of the radius, each half the way across.
-    const len = Math.min(2 * SWITCH_LENGTH, Math.max(SWITCH_LEAST, 2 * Math.sqrt(Math.abs(g0) * TURNOUT_RADIUS)));
-    gapAt = (x) => { const u = Math.min(1, Math.max(0, x / len)); return u <= 0.5 ? g0 * (1 - 2 * u * u) : g0 * 2 * (1 - u) ** 2; };
-    from = 0;
-    to = len;
+    const g0 = gapOf(kE);
+    k0 = kE;
+    len = Math.min(2 * SWITCH_LENGTH, Math.max(SWITCH_LEAST, 2 * Math.sqrt(Math.abs(g0) * TURNOUT_RADIUS)));
+    gapAt = (d) => { const u = Math.min(1, Math.max(0, d / len)); return u <= 0.5 ? g0 * (1 - 2 * u * u) : g0 * 2 * (1 - u) ** 2; };
   }
-  from = Math.max(from, -TURNOUT_TANGENT);
-  for (let i = Math.ceil(from / ds); i * ds <= to + 1e-6; i++) {
-    const k = kE + dir * i;
+  for (let i = 1; i * ds <= len + 1e-6; i++) {
+    const k = k0 + dir * i;
     if (k < 0 || k > steps) break;
     // (On beyond the data only where the line is not: another stretch of it, its own data.)
-    if (i > 0 && !Number.isNaN(offs[k])) break;
-    if (i <= 0 && !inData(k)) continue;
+    if ((k - kE) * dir > 0 && !Number.isNaN(offs[k])) break;
     offs[k] = parentAt(k) + gapAt(i * ds);
   }
 }
