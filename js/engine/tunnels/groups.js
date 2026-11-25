@@ -73,14 +73,12 @@ const WIDTH_SMOOTH = 10;
 /* Metres from a spine's end within which a chain beside it coming out makes
  * the bore's end a portal. */
 const PORTAL_NEAR = 25;
-/* Metres a branch's own bore runs on back into the bore it leaves (5.17m): it
- * leaves where its line is BESIDE_ACROSS off the spine, and there the bore's
- * reach, smoothed along, falls short of it (3.4 m for a branch leaving at 5°),
- * so the branch's open end stood mostly outside the room it opens into, a hole
- * to the rock behind. Back along its line by more than the reach is held and
- * smoothed over (WIDTH_HOLD and WIDTH_SMOOTH: 16 m), the reach covers it; what
- * of it lies inside the bore is not drawn (shaders/tunnel.wgsl fsMeet). */
-const JOIN_INTO = 20;
+/* Metres a branch's own bore runs on back into the bore it leaves, past that bore's end wall where it leaves it
+ * (5.18k, wallOf: the bore is as wide as the branch needs right up to there; one of its samples and a metre more).
+ * 5.17m ran it JOIN_INTO = 20 m back, as the bore's reach, smoothed along, fell short where it left (3.4 m for a branch
+ * leaving at 5°): by the Ceneri junction the branch's tube then ran on inside the bore flaring out round it. What of
+ * it lies inside the bore is not drawn (shaders/tunnel.wgsl fsMeet). */
+const JOIN_FLUSH = 3;
 
 export const TUBE_END = { PORTAL: 1, OPEN: 2, CLOSED: 3, JOIN: 4 };
 /* Floats per spine point in a tube's points. */
@@ -523,8 +521,29 @@ function boreOf(spine, others, frame, priority) {
     return { at, acr };
   });
   if (spine.family === FAMILY_RAIL && others.length) keepContiguous(others, seen, steps);
+  const walled = [];   // the chains that leave the bore as tubes of their own: their reach apart, and where it stops
   for (let ci = 0; ci < others.length; ci++) {
     const c = others[ci], n = c.steps, { at, acr } = seen[ci];
+    // Stretches beyond the bore, BRANCH_LEAST long or more, go on as chains of their own, from JOIN_FLUSH inside the
+    // bore; where one leaves it, the bore is as wide for this chain as it needs up to there and no further: its end
+    // wall (wallOf, 5.18k).
+    const walls = [];
+    for (let k = 0; k <= n;) {
+      if (at[k] >= 0) { k++; continue; }
+      let e = k;
+      while (e < n && at[e + 1] < 0) e++;
+      const a = k * c.ds, b = e * c.ds;
+      if (b - a >= BRANCH_LEAST) {
+        left.push(stretch(c, k === 0 ? a : Math.max(0, a - JOIN_FLUSH), e === n ? b : Math.min(c.length, b + JOIN_FLUSH),
+          k === 0 ? c.ends[0] : TUBE_END.JOIN, e === n ? c.ends[1] : TUBE_END.JOIN));
+        const w0 = k > 0 ? wallOf(at, k - 1, -1) : null, w1 = e < n ? wallOf(at, e + 1, 1) : null;
+        if (w0) walls.push(w0);
+        if (w1) walls.push(w1);
+      }
+      k = e + 1;
+    }
+    // (Its reach apart where it leaves the bore, to stop at its walls once held and smoothed.)
+    const cLo = walls.length ? new Float64Array(steps + 1) : lo, cHi = walls.length ? new Float64Array(steps + 1) : hi;
     const mark = new Uint8Array(steps + 1);
     const offs = new Float64Array(steps + 1).fill(NaN);
     let covered = 0;
@@ -533,11 +552,12 @@ function boreOf(spine, others, frame, priority) {
       if (best < 0) continue;
       const across = acr[k];
       covered++;
-      if (across < lo[best]) lo[best] = across;
-      if (across > hi[best]) hi[best] = across;
+      if (across < cLo[best]) cLo[best] = across;
+      if (across > cHi[best]) cHi[best] = across;
       mark[best] = 1;
       offs[best] = across;
     }
+    if (walls.length && covered) walled.push({ lo: cLo, hi: cHi, walls });
     if (covered) {
       // (Where it is beside the spine, sample by sample: a sample it skipped between two takes their middle.)
       for (let k = 1; k < steps; k++) if (Number.isNaN(offs[k]) && !Number.isNaN(offs[k - 1]) && !Number.isNaN(offs[k + 1])) offs[k] = (offs[k - 1] + offs[k + 1]) / 2;
@@ -547,18 +567,6 @@ function boreOf(spine, others, frame, priority) {
       for (const kd of c.kinds) kinds.add(kd);
       layer = Math.min(layer, c.layer);
       for (const e of [0, 1]) if (c.ends[e] === TUBE_END.PORTAL && at[e ? n : 0] >= 0) portals.push(at[e ? n : 0] * ds);
-    }
-    // Stretches beyond the bore, BRANCH_LEAST long or more, go on as chains of their own.
-    for (let k = 0; k <= n;) {
-      if (at[k] >= 0) { k++; continue; }
-      let e = k;
-      while (e < n && at[e + 1] < 0) e++;
-      const a = k * c.ds, b = e * c.ds;
-      if (b - a >= BRANCH_LEAST) {
-        left.push(stretch(c, k === 0 ? a : Math.max(0, a - JOIN_INTO), e === n ? b : Math.min(c.length, b + JOIN_INTO),
-          k === 0 ? c.ends[0] : TUBE_END.JOIN, e === n ? c.ends[1] : TUBE_END.JOIN));
-      }
-      k = e + 1;
     }
   }
   if (spine.length < 1) return { tube: null, left };
@@ -599,9 +607,36 @@ function boreOf(spine, others, frame, priority) {
     lineAt[k * LINE_FLOATS + 1] = 0;
     for (let i = 0; i < LINE_MOST - 1; i++) lineAt[k * LINE_FLOATS + 2 + i] = i < places.length ? places[i].offs[k] : NaN;
   }
+  const holdN = Math.round(WIDTH_HOLD / ds), smoothN = Math.round(WIDTH_SMOOTH / ds);
   if (wide) {
-    holdAndSmooth(lo, Math.round(WIDTH_HOLD / ds), Math.round(WIDTH_SMOOTH / ds), -1);
-    holdAndSmooth(hi, Math.round(WIDTH_HOLD / ds), Math.round(WIDTH_SMOOTH / ds), 1);
+    holdAndSmooth(lo, holdN, smoothN, -1);
+    holdAndSmooth(hi, holdN, smoothN, 1);
+  }
+  // A chain leaving as a tube of its own (5.18k, his words on 5.18j: "still wrong"): its reach held and smoothed as the
+  // others', then none of it past its walls: the bore stops wide there within one sample, a junction cavern's end wall
+  // with the branch's mouth in it (up to 5.18j it flared out over 16 m past the branch's way out, by the Ceneri
+  // junction across the branch's tube, which ran on 20 m inside it: a gap where the two walls crossed, its track twice).
+  for (const w of walled) {
+    // (As wide on past each wall as at it while smoothed, so the reach at the wall holds all of the branch's mouth:
+    // smoothed into nothing beyond, it fell 1 m short of it.)
+    for (const { k, out } of w.walls) {
+      for (let i = 1; i <= holdN + smoothN; i++) {
+        const j = k + out * i;
+        if (j < 0 || j > steps) break;
+        w.lo[j] = Math.min(w.lo[j], w.lo[k]); w.hi[j] = Math.max(w.hi[j], w.hi[k]);
+      }
+    }
+    holdAndSmooth(w.lo, holdN, smoothN, -1);
+    holdAndSmooth(w.hi, holdN, smoothN, 1);
+    for (const { k, out } of w.walls) {
+      // (As far as that and the smoothing of it reach.)
+      for (let i = 1; i <= 2 * (holdN + smoothN); i++) {
+        const j = k + out * i;
+        if (j < 0 || j > steps) break;
+        w.lo[j] = 0; w.hi[j] = 0;
+      }
+    }
+    for (let k = 0; k <= steps; k++) { lo[k] = Math.min(lo[k], w.lo[k]); hi[k] = Math.max(hi[k], w.hi[k]); }
   }
   const points = new Float64Array((steps + 1) * TUBE_POINT);
   for (let k = 0; k <= steps; k++) {
@@ -682,6 +717,20 @@ function turnout(b, parent, kE, dir, steps, ds) {
     if ((k - kE) * dir > 0 && !Number.isNaN(offs[k])) break;
     offs[k] = parentAt(k) + gapAt(i * ds);
   }
+}
+
+/* Where a chain beside a spine leaves its bore (5.18k): `kc` its last sample beside it, its beside part on the
+ * `inward` side of it (-1: its samples before kc; 1: after). The spine's sample there and which way along the spine is
+ * out of the bore ({ k, out: ±1 }), or null where the beside part is too short to tell. */
+function wallOf(at, kc, inward) {
+  const k = at[kc];
+  if (k < 0) return null;
+  for (let m = 1; m <= 4; m++) {
+    const j = kc + inward * m;
+    if (j < 0 || j >= at.length || at[j] < 0) break;
+    if (at[j] !== k) return { k, out: Math.sign(k - at[j]) };
+  }
+  return null;
 }
 
 /* The part of a chain from a to b metres along, as a chain: its curve's samples there (5.17q: its nodes made the

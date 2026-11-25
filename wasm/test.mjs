@@ -2577,10 +2577,41 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     seen.add(signature(loadInOrder(tiles, seeded(i + 1), tubesFrom, TUBE_END, TUBE_POINT, { hints: false })));
     seen.add(signature(tubesFrom(shuffled(tiles.flatMap((t) => t.runs), seeded(100 + i)), {}, [])));
   }
-  const want = '2|89711,461037|89868,461546 4/2 5980; 2|89717,461037|89865,461564 1/2 6180; 2|89860,461562|89870,461533 1/4 320';
+  // (Since 5.18k the branches end 3 m inside the caverns' end walls, not 20 m: the line into the west tube from the
+  // junction 5960 m, the viaduct's track 300 m.)
+  const want = '2|89711,461037|89869,461544 4/2 5960; 2|89717,461037|89865,461564 1/2 6180; 2|89860,461562|89869,461535 1/4 300';
   if (seen.size !== 1) problems.push(`${seen.size} groupings: ${[...seen].join(' | ')}`);
   else if (!seen.has(want)) problems.push(`grouped as ${[...seen][0]}`);
   console.log(`tube grouping: the Ceneri junction's tiles in 40 orders, ${seen.size} grouping${seen.size === 1 ? '' : 's'} (8 in 50 up to 5.18h) — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  if (problems.length) process.exitCode = 1;
+}
+
+/* ---- 17f. junction caverns (engine/tunnels/groups.js wallOf, 5.18k): a branch leaving a bore at 5.2°, as the Ceneri
+ * junction's viaduct track: the bore stops wide where the branch leaves it within one sample (an end wall), as wide
+ * there as the branch's line is far off, and the branch's tube ends within JOIN_FLUSH (3 m) of the wall, inside it.
+ * Up to 5.18j the bore flared out over 16 m past the way out and the branch ran on 20 m inside it. */
+{
+  const { tubesFrom, TUBE_POINT, TUBE_END } = await import('../js/engine/tunnels/groups.js');
+  const { END } = await import('../js/engine/tunnels/runs.js');
+  const problems = [];
+  const M_LAT = 111132, lat0 = 46.15, M_LON = 111320 * Math.cos((lat0 * Math.PI) / 180), lon0 = 8.98;
+  const line = (pts, ends) => ({ kind: 'rail', family: 2, layer: -1, oneway: false,
+    points: Float64Array.from(pts.flatMap(([x, y]) => [lon0 + x / M_LON, lat0 + y / M_LAT])), ends: ends.map((type) => ({ type, degree: 3 })) });
+  const a = Math.tan((5.2 * Math.PI) / 180);
+  const tubes = tubesFrom([line([[0, -500], [0, 300]], [END.PORTAL, END.PORTAL]), line([[-400 * a, -400], [0, 0]], [END.PORTAL, END.NODE])]);
+  const main = tubes.find((t) => t.ends.every((e) => e.type === TUBE_END.PORTAL)), branch = tubes.find((t) => t !== main);
+  const y = (lat) => (lat - lat0) * M_LAT;
+  let wall = -1, before = 0, at = 0, step = 0;
+  if (main) {
+    const n = main.points.length / TUBE_POINT, reach = (k) => Math.abs(main.points[k * TUBE_POINT + 3]) + main.points[k * TUBE_POINT + 4];
+    for (let k = 1; k < n && wall < 0; k++) if (reach(k) > 0.05) { wall = k; before = reach(k - 1); at = reach(k); step = main.points[k * TUBE_POINT + 2] - main.points[(k - 1) * TUBE_POINT + 2]; }
+  }
+  const wallY = main && wall >= 0 ? y(main.points[wall * TUBE_POINT + 1]) : NaN;
+  const joinEnd = branch?.ends.find((e) => e.type === TUBE_END.JOIN), inside = joinEnd ? y(joinEnd.lat) - wallY : NaN;
+  const off = Math.abs(wallY) * a;
+  if (!(before <= 0.05 && at >= off - 0.1 && step <= 2.1)) problems.push(`the wall: ${before.toFixed(2)} → ${at.toFixed(2)} m over ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off)`);
+  if (!(inside >= 0 && inside <= 3.1)) problems.push(`the branch's end ${inside.toFixed(1)} m past the wall`);
+  console.log(`junction caverns: a branch leaving at 5.2°, the bore's reach ${before.toFixed(2)} → ${at.toFixed(2)} m within ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off), its tube ending ${inside.toFixed(1)} m inside the wall — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 
