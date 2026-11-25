@@ -138,14 +138,22 @@ export class TunnelView {
    * its portals (as tunnel.wgsl tDaylight has it) and its lamps' (EYE.interior). render.js adapts the eye to it.
    */
   eyeLight() {
-    if (!this.enabled) return 1;
-    for (const m of this.meshes) {
-      if (!m.inside || Number.isNaN(m.insideAt)) continue;
-      const d0 = Math.max(m.insideAt - m.portals[0], 0), d1 = Math.max(m.portals[1] - m.insideAt, 0);
-      const fall = 0.55 * (Math.exp(-d0 / 18) + Math.exp(-d1 / 18)) + 0.08 * (Math.exp(-d0 / 90) + Math.exp(-d1 / 90));
-      return Math.min(1, fall) + EYE.interior;
-    }
-    return 1;
+    const m = this.#eyeRoom();
+    return m ? daylightIn(m) + EYE.interior : 1;
+  }
+
+  /** The daylight at the eye against level ground's: 1 outside a tunnel; inside, what falls in at its portals, near 0
+   *  deep in it (passes/terrain.js: the ground met from beneath dark there, 5.18j). */
+  daylightAtEye() {
+    const m = this.#eyeRoom();
+    return m ? daylightIn(m) : 1;
+  }
+
+  /* The mesh the camera is in (#inside), or null. */
+  #eyeRoom() {
+    if (!this.enabled) return null;
+    for (const m of this.meshes) if (m.inside && !Number.isNaN(m.insideAt)) return m;
+    return null;
   }
 
   /**
@@ -336,4 +344,11 @@ function cuttingReport(c, groundAt) {
       return [Math.round(d), r2(c.tops[2 * i]), at(c.off - w), r2(c.tops[2 * i + 1]), at(c.off + w)];
     }),
   };
+}
+
+/* The daylight falling in at a mesh's portals where the camera is in it (its insideAt), against level ground's, as
+ * tunnel.wgsl tDaylight falls off from each portal (at most 1). */
+function daylightIn(m) {
+  const d0 = Math.max(m.insideAt - m.portals[0], 0), d1 = Math.max(m.portals[1] - m.insideAt, 0);
+  return Math.min(1, 0.55 * (Math.exp(-d0 / 18) + Math.exp(-d1 / 18)) + 0.08 * (Math.exp(-d0 / 90) + Math.exp(-d1 / 90)));
 }

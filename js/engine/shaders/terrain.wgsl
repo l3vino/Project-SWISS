@@ -158,26 +158,23 @@ fn faceLook(merc : vec2f, height : f32, n : vec3f, blur : vec4f, rock : f32) -> 
 }
 
 // `front`: always, but while the camera is inside a tunnel (passes/terrain.js `underground`, 5.18j): then every tile
-// is drawn from both sides, and the ground over the tunnel met from beneath is dark rock (deepRock), so a gap between
-// tubes where they meet shows rock, not the sky through the mountain (by the Ceneri junction, 100 m under the ground,
-// only the tiles near the bores' shallow ends were drawn from both sides).
+// is drawn from both sides, and the ground over the tunnel met from beneath is dark rock (UNDER_LIGHT), so a gap
+// between tubes where they meet shows rock, not the sky through the mountain (by the Ceneri junction, 100 m under the
+// ground, only the tiles near the bores' shallow ends were drawn from both sides).
 @fragment
 fn fs(in : VSOut, @builtin(front_facing) front : bool) -> @location(0) vec4f {
   let dmx = dpdx(in.merc);
   let dmy = dpdy(in.merc);
   let facet = facetOf(in.world);
-  if (!front) { return deepRock(in); }
-  return shade(in, dmx, dmy, false, facet, false);
+  var seen = in;
+  if (!front) { seen.normal = -in.normal; }
+  return shade(seen, dmx, dmy, !front, facet, false);
 }
 
-// The ground met from beneath far from any mouth (fs, fsMasked: only while the camera is inside a tunnel): the rock a
-// gap between tubes looks into, where no daylight reaches (fsPortal's half-lit rock is a mouth's, 5.18j: deep under the
-// Ceneri junction it showed as a pale patch in the dark tunnel). Unhazed, as shade() leaves the ground from beneath.
-const DEEP_ROCK_LIGHT : f32 = 0.06;
-fn deepRock(in : VSOut) -> vec4f {
-  let n = -normalize(in.normal);
-  return present(faceLook(in.merc, in.height, n, vec4f(0.0), 1.0) * DEEP_ROCK_LIGHT, in.clip.xy);
-}
+// How lit the ground met from beneath is: half lit, as by a tunnel's mouth (fsPortal, fsCut); set lower for the
+// pipelines drawn while the camera is deep in a tunnel (passes/terrain.js DEEP_UNDER_LIGHT, 5.18j: from 100 m under the
+// Ceneri junction a gap between its tubes looked onto the ground by its portals from beneath, a pale patch).
+override UNDER_LIGHT : f32 = 0.5;
 
 // For a tile only partly replaced by finer children: the quarters they cover
 // are left to them. Only these few tiles pay for the discard, which would
@@ -190,8 +187,9 @@ fn fsMasked(in : VSOut, @builtin(front_facing) front : bool) -> @location(0) vec
   let facet = facetOf(in.world);
   let quarter = select(0u, 1u, in.uv.x >= 0.5) | select(0u, 2u, in.uv.y >= 0.5);
   if (((in.mask >> quarter) & 1u) != 0u) { discard; }
-  if (!front) { return deepRock(in); }
-  return shade(in, dmx, dmy, false, facet, false);
+  var seen = in;
+  if (!front) { seen.normal = -in.normal; }
+  return shade(seen, dmx, dmy, !front, facet, false);
 }
 
 // Whether a point (camera-relative) is inside a portal's opening: its
@@ -310,9 +308,9 @@ fn shade(in : VSOut, dmx : vec2f, dmy : vec2f, under : bool, facet : vec3f, apro
     let edge = min(min(in.uv.x, 1.0 - in.uv.x), min(in.uv.y, 1.0 - in.uv.y));
     albedo = mix(vec3f(0.01), levelColour(in.level), smoothstep(0.0, 0.01, edge));
   } else if (under) {
-    // The earth beside a tunnel's mouth, from inside it: rock, half lit.
+    // The earth beside a tunnel's mouth, from inside it: rock, half lit (deep in a tunnel, hardly: UNDER_LIGHT).
     albedo = faceLook(in.merc, in.height, n, vec4f(0.0), 1.0);
-    light = modelledLight(up) * 0.5;
+    light = modelledLight(up) * UNDER_LIGHT;
   } else if (apron) {
     // The open approach in front of a tube (5.17n): the photo there shows the hillside over the real portal; its floor
     // as the tube's, ballast, the tunnel's own roads and tracks on it (vector.wgsl, as in the tube).

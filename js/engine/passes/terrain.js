@@ -57,6 +57,10 @@ const RESORT = 40, CUT_PIXELS = 0.75;
 /* The tile uniform's mask bit for a tile whose bores are in its cut slot (terrain.wgsl Tile.mask): the track over it
  * is left out inside them, where the tunnel's own track runs (track.wgsl, 5.18c). */
 const MASK_BORES = 0x400;
+/* The ground met from beneath, lit by this share of the light (terrain.wgsl UNDER_LIGHT: 0.5, half lit as by a mouth)
+ * while the camera is in a tunnel: every tile's, and once the daylight at the eye (tunnels view daylightAtEye, as
+ * tunnel.wgsl tDaylight falls off: under DEEP_DAYLIGHT, some 45 m in) is gone, the portals' and bores' too (5.18j). */
+const DEEP_UNDER_LIGHT = 0.06, DEEP_DAYLIGHT = 0.1;
 let cutIds = 0;
 /* The railways' track (5.18b): its rails stand as geometry while their 72 mm heads look RAIL_PIXELS wide or more,
  * fading out from RAIL_FADE times that distance (thinner, they would shimmer; the bed's top draws them instead). */
@@ -79,24 +83,28 @@ export class TerrainPass {
     // Group 3: the roads and railways under each pixel (engine/vector/tiles.js).
     const layout = device.createPipelineLayout({ bindGroupLayouts: [frame.layout, tileLayout, imagery.layout, vector.layout] });
 
-    const describe = (label, entryPoint, cullMode = 'back') => ({
+    const describe = (label, entryPoint, cullMode = 'back', constants = undefined) => ({
       label,
       layout,
       vertex: { module, entryPoint: 'vs', buffers: [TERRAIN_VERTEX_LAYOUT] },
-      fragment: { module, entryPoint, targets: [{ format }] },
+      fragment: { module, entryPoint, constants, targets: [{ format }] },
       primitive: { topology: 'triangle-list', cullMode, frontFace: 'ccw' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'greater' },
     });
-    const [whole, masked, wholeUnder, maskedUnder, portal, cut, track] = await Promise.all([
+    const deep = { UNDER_LIGHT: DEEP_UNDER_LIGHT };
+    const [whole, masked, wholeUnder, maskedUnder, portal, cut, portalDeep, cutDeep, track] = await Promise.all([
       device.createRenderPipelineAsync(describe('terrain', 'fs')),
       device.createRenderPipelineAsync(describe('terrain-masked', 'fsMasked')),
-      // Both sides, while the camera is inside a tunnel (`underground`, 5.18j): the ground over it met from beneath.
-      device.createRenderPipelineAsync(describe('terrain-under', 'fs', 'none')),
-      device.createRenderPipelineAsync(describe('terrain-masked-under', 'fsMasked', 'none')),
+      // Both sides, while the camera is inside a tunnel (5.18j): the ground over it met from beneath, dark.
+      device.createRenderPipelineAsync(describe('terrain-under', 'fs', 'none', deep)),
+      device.createRenderPipelineAsync(describe('terrain-masked-under', 'fsMasked', 'none', deep)),
       // Both sides: the ground round a portal seen from inside the tunnel is met from beneath (terrain.wgsl fsPortal).
       device.createRenderPipelineAsync(describe('terrain-portal', 'fsPortal', 'none')),
       // And along the whole bore (fsCut).
       device.createRenderPipelineAsync(describe('terrain-cut', 'fsCut', 'none')),
+      // The two, deep in a tunnel (far from its mouths' daylight): what of them is met from beneath, through a gap, dark.
+      device.createRenderPipelineAsync(describe('terrain-portal-deep', 'fsPortal', 'none', deep)),
+      device.createRenderPipelineAsync(describe('terrain-cut-deep', 'fsCut', 'none', deep)),
       // The railways' track over the tiles (track.wgsl).
       device.createRenderPipelineAsync({
         ...describe('terrain-track', 'fsTrack'),
@@ -104,7 +112,8 @@ export class TerrainPass {
       }),
     ]);
 
-    return new TerrainPass(device, { whole, masked, wholeUnder, maskedUnder, portal, cut, track }, { tileLayout, timer, terrain, imagery, vector, tunnels, frame, view });
+    return new TerrainPass(device, { whole, masked, wholeUnder, maskedUnder, portal, cut, portalDeep, cutDeep, track },
+      { tileLayout, timer, terrain, imagery, vector, tunnels, frame, view });
   }
 
   constructor(device, pipelines, { tileLayout, timer, terrain, imagery, vector, tunnels, frame, view = null }) {
@@ -407,9 +416,11 @@ export class TerrainPass {
       pass.setBindGroup(3, this.vector.bindGroup);
       // Whole tiles first, near to far, then the few partly covered ones, then those with portals, then those cut along
       // the bores. While the camera is inside a tunnel, the first two from both sides as the others are (5.18j: where
-      // tubes meet, a gap between them showed the sky through the mountain; now the ground over it, from beneath).
+      // tubes meet, a gap between them showed the sky through the mountain; now the ground over it, from beneath, dark);
+      // deep in it, out of its mouths' daylight, the others' ground from beneath dark too.
       const P = this.pipelines, under = Boolean(this.tunnels?.enabled && this.tunnels.meshes?.some((m) => m.inside));
-      const pipelines = [under ? P.wholeUnder : P.whole, under ? P.maskedUnder : P.masked, P.portal, P.cut];
+      const deep = under && this.tunnels.daylightAtEye() < DEEP_DAYLIGHT;
+      const pipelines = [under ? P.wholeUnder : P.whole, under ? P.maskedUnder : P.masked, deep ? P.portalDeep : P.portal, deep ? P.cutDeep : P.cut];
       const offsets = this.offsets ??= [0, 0];
       for (let k = 0; k < 4; k++) {
         let bound = false;
