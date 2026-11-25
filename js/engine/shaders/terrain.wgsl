@@ -158,17 +158,25 @@ fn faceLook(merc : vec2f, height : f32, n : vec3f, blur : vec4f, rock : f32) -> 
 }
 
 // `front`: always, but while the camera is inside a tunnel (passes/terrain.js `underground`, 5.18j): then every tile
-// is drawn from both sides, and the ground over the tunnel met from beneath is dark rock as fsPortal's is, so a gap
-// between tubes where they meet shows rock, not the sky through the mountain (by the Ceneri junction, 100 m under
-// the ground, only the tiles near the bores' shallow ends were drawn from both sides).
+// is drawn from both sides, and the ground over the tunnel met from beneath is dark rock (deepRock), so a gap between
+// tubes where they meet shows rock, not the sky through the mountain (by the Ceneri junction, 100 m under the ground,
+// only the tiles near the bores' shallow ends were drawn from both sides).
 @fragment
 fn fs(in : VSOut, @builtin(front_facing) front : bool) -> @location(0) vec4f {
   let dmx = dpdx(in.merc);
   let dmy = dpdy(in.merc);
   let facet = facetOf(in.world);
-  var seen = in;
-  if (!front) { seen.normal = -in.normal; }
-  return shade(seen, dmx, dmy, !front, facet, false);
+  if (!front) { return deepRock(in); }
+  return shade(in, dmx, dmy, false, facet, false);
+}
+
+// The ground met from beneath far from any mouth (fs, fsMasked: only while the camera is inside a tunnel): the rock a
+// gap between tubes looks into, where no daylight reaches (fsPortal's half-lit rock is a mouth's, 5.18j: deep under the
+// Ceneri junction it showed as a pale patch in the dark tunnel). Unhazed, as shade() leaves the ground from beneath.
+const DEEP_ROCK_LIGHT : f32 = 0.06;
+fn deepRock(in : VSOut) -> vec4f {
+  let n = -normalize(in.normal);
+  return present(faceLook(in.merc, in.height, n, vec4f(0.0), 1.0) * DEEP_ROCK_LIGHT, in.clip.xy);
 }
 
 // For a tile only partly replaced by finer children: the quarters they cover
@@ -182,9 +190,8 @@ fn fsMasked(in : VSOut, @builtin(front_facing) front : bool) -> @location(0) vec
   let facet = facetOf(in.world);
   let quarter = select(0u, 1u, in.uv.x >= 0.5) | select(0u, 2u, in.uv.y >= 0.5);
   if (((in.mask >> quarter) & 1u) != 0u) { discard; }
-  var seen = in;
-  if (!front) { seen.normal = -in.normal; }
-  return shade(seen, dmx, dmy, !front, facet, false);
+  if (!front) { return deepRock(in); }
+  return shade(in, dmx, dmy, false, facet, false);
 }
 
 // Whether a point (camera-relative) is inside a portal's opening: its
