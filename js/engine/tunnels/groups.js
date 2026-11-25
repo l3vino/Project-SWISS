@@ -89,10 +89,10 @@ export const TUBE_POINT = 5;
  * there, then each (at most LINE_MOST) in metres right of the spine, in order, the spine's own at 0 among them. */
 export const LINE_MOST = 6;
 export const LINE_FLOATS = 1 + LINE_MOST;
-/* A turnout (5.17q): a track whose line's data ends within SWITCH_FAR of another track runs into it over
- * SWITCH_LENGTH (a 1:12 turnout's ~40 m to tracks TRACK_SPACING apart; shorter for less, SWITCH_LEAST at the least);
- * with none so near, on as it lies to the bore's end if that is within RUN_ON. */
-const SWITCH_FAR = 6, SWITCH_LENGTH = 55, SWITCH_LEAST = 8, TRACK_SPACING = 4.5, RUN_ON = 40;
+/* A turnout (5.17q; its curve since 5.18j: turnout()): a track whose line's data ends within SWITCH_FAR of another
+ * track runs into it; beside it, over a reverse curve SWITCH_LEAST to 2 × SWITCH_LENGTH metres long; with none so
+ * near, on as it lies to the bore's end if that is within RUN_ON. */
+const SWITCH_FAR = 6, SWITCH_LENGTH = 55, SWITCH_LEAST = 8, RUN_ON = 40;
 
 const M_LAT = 111132;
 
@@ -560,7 +560,6 @@ function boreOf(spine, others, frame, priority) {
   // Where a line's data ends inside the bore, its track runs on into the nearest track there over a turnout (his
   // words on 5.17q: "connect the tracks correctly even if the data is not there", "add rail intersection/splitting"),
   // or, with none within SWITCH_FAR, on as it lies to the bore's end if that is within RUN_ON.
-  const offAt = (b, k) => (b === null ? 0 : b.offs[k]);
   for (const b of places) {
     let first = -1, last = -1;
     for (let k = 0; k <= steps; k++) if (!Number.isNaN(b.offs[k])) { if (first < 0) first = k; last = k; }
@@ -572,16 +571,7 @@ function boreOf(spine, others, frame, priority) {
       let parent = null, gap = Math.abs(off0);
       for (const o of places) if (o !== b && !Number.isNaN(o.offs[kE]) && Math.abs(o.offs[kE] - off0) < gap) { parent = o; gap = Math.abs(o.offs[kE] - off0); }
       if (gap < SWITCH_FAR) {
-        const m = Math.max(2, Math.round(Math.min(SWITCH_LENGTH, Math.max(SWITCH_LEAST, (gap / TRACK_SPACING) * SWITCH_LENGTH)) / ds));
-        let lastP = offAt(parent, kE);
-        for (let i = 1; i <= m; i++) {
-          const k = kE + dir * i;
-          if (k < 0 || k > steps || !Number.isNaN(b.offs[k])) break;
-          const p = offAt(parent, k);
-          if (!Number.isNaN(p)) lastP = p;
-          const t = i / m;
-          b.offs[k] = off0 + (lastP - off0) * t * t * (3 - 2 * t);
-        }
+        turnout(b, parent, kE, dir, steps, ds);
       } else if ((dir < 0 ? kE : steps - kE) * ds <= RUN_ON) {
         for (let k = kE + dir; k >= 0 && k <= steps && Number.isNaN(b.offs[k]); k += dir) b.offs[k] = off0;
       }
@@ -618,6 +608,54 @@ function boreOf(spine, others, frame, priority) {
   for (const kd of kinds) if (kind === null || (priority[kd] ?? 0) > (priority[kind] ?? 0)) kind = kd;
   const key = tubeKey(spine.family, ends[0].lon, ends[0].lat, ends[1].lon, ends[1].lat);
   return { tube: { key, family: spine.family, kind, layer, tracks, oneway: spine.oneway === true, length: spine.length, points, lines: lineAt, ends }, left };
+}
+
+/* A turnout where a line's data ends by another track (5.18j, his words on 5.18i: "rails when 2 "connect" are not
+ * straight.. they kinda curve"): the other track runs on as it is, and this one meets it along one curve of
+ * TURNOUT_RADIUS (a 1:12 turnout's: 500 m, 4.76°, 41.6 m long), tangent to its own line and to the other's, round
+ * where the two lines meet (as its data has them, or on along the way its last TURNOUT_LOOK metres run where they do
+ * not meet yet); where it runs beside the other, a reverse curve of that radius over to it. Up to 5.18i a smoothstep
+ * from where its data ended: it turned parallel there, then swung across in an S. Writes b.offs (metres right of the
+ * spine, NaN where the line is not): back into its data at most TURNOUT_TANGENT metres, and on beyond it until it is on
+ * the other track (not over another stretch of its data, nor past the bore's ends). `parent`: the other track's place
+ * (its offs), null for the spine's own (0). */
+const TURNOUT_RADIUS = 500, TURNOUT_LOOK = 20, TURNOUT_TANGENT = 40, TURNOUT_CLOSING = 0.002, TURNOUT_ON = 0.05;
+
+function turnout(b, parent, kE, dir, steps, ds) {
+  const offs = b.offs, inData = (k) => k >= 0 && k <= steps && !Number.isNaN(offs[k]);
+  const p0 = parent === null ? 0 : parent.offs[kE];
+  const parentAt = (k) => (parent === null ? 0 : Number.isNaN(parent.offs[k]) ? p0 : parent.offs[k]);
+  // How fast the gap closes towards the end of the data, over its last TURNOUT_LOOK metres.
+  let kB = kE;
+  for (let i = 1; i <= Math.round(TURNOUT_LOOK / ds) && inData(kE - dir * i); i++) kB = kE - dir * i;
+  const g0 = offs[kE] - parentAt(kE), gB = offs[kB] - parentAt(kB), run = Math.abs(kE - kB) * ds;
+  // (Which side it comes from: where its data ends on the other track, the side it came along.)
+  const sign = (Math.abs(g0) > TURNOUT_ON ? Math.sign(g0) : Math.sign(gB)) || 1;
+  const closing = run > 0 ? (sign * gB - sign * g0) / run : 0;
+  // The gap x metres on beyond the end of the data (back into it where negative), and how far it is written.
+  let gapAt, from, to;
+  if (closing > TURNOUT_CLOSING) {
+    // Where the two lines meet (x0), and the curve's tangents either side of it: R tan(α/2), α the angle they meet at.
+    const x0 = (sign * g0) / closing, t = Math.min(TURNOUT_TANGENT, (TURNOUT_RADIUS * closing) / 2);
+    gapAt = (x) => (x <= x0 - t ? g0 - sign * closing * x : x >= x0 + t ? 0 : sign * (closing / (4 * t)) * (x0 + t - x) ** 2);
+    from = Math.min(0, x0 - t);
+    to = x0 + t;
+  } else {
+    // Beside it: over and back, two curves of the radius, each half the way across.
+    const len = Math.min(2 * SWITCH_LENGTH, Math.max(SWITCH_LEAST, 2 * Math.sqrt(Math.abs(g0) * TURNOUT_RADIUS)));
+    gapAt = (x) => { const u = Math.min(1, Math.max(0, x / len)); return u <= 0.5 ? g0 * (1 - 2 * u * u) : g0 * 2 * (1 - u) ** 2; };
+    from = 0;
+    to = len;
+  }
+  from = Math.max(from, -TURNOUT_TANGENT);
+  for (let i = Math.ceil(from / ds); i * ds <= to + 1e-6; i++) {
+    const k = kE + dir * i;
+    if (k < 0 || k > steps) break;
+    // (On beyond the data only where the line is not: another stretch of it, its own data.)
+    if (i > 0 && !Number.isNaN(offs[k])) break;
+    if (i <= 0 && !inData(k)) continue;
+    offs[k] = parentAt(k) + gapAt(i * ds);
+  }
 }
 
 /* The part of a chain from a to b metres along, as a chain: its curve's samples there (5.17q: its nodes made the

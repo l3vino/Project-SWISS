@@ -157,23 +157,34 @@ fn faceLook(merc : vec2f, height : f32, n : vec3f, blur : vec4f, rock : f32) -> 
   return base * (1.0 + g * mix(0.5, 0.9, rock));
 }
 
+// `front`: always, but while the camera is inside a tunnel (passes/terrain.js `underground`, 5.18j): then every tile
+// is drawn from both sides, and the ground over the tunnel met from beneath is dark rock as fsPortal's is, so a gap
+// between tubes where they meet shows rock, not the sky through the mountain (by the Ceneri junction, 100 m under
+// the ground, only the tiles near the bores' shallow ends were drawn from both sides).
 @fragment
-fn fs(in : VSOut) -> @location(0) vec4f {
-  return shade(in, dpdx(in.merc), dpdy(in.merc), false, facetOf(in.world), false);
+fn fs(in : VSOut, @builtin(front_facing) front : bool) -> @location(0) vec4f {
+  let dmx = dpdx(in.merc);
+  let dmy = dpdy(in.merc);
+  let facet = facetOf(in.world);
+  var seen = in;
+  if (!front) { seen.normal = -in.normal; }
+  return shade(seen, dmx, dmy, !front, facet, false);
 }
 
 // For a tile only partly replaced by finer children: the quarters they cover
 // are left to them. Only these few tiles pay for the discard, which would
 // otherwise cost every terrain pixel its early depth test.
 @fragment
-fn fsMasked(in : VSOut) -> @location(0) vec4f {
+fn fsMasked(in : VSOut, @builtin(front_facing) front : bool) -> @location(0) vec4f {
   // Derivatives first, while control flow is still uniform.
   let dmx = dpdx(in.merc);
   let dmy = dpdy(in.merc);
   let facet = facetOf(in.world);
   let quarter = select(0u, 1u, in.uv.x >= 0.5) | select(0u, 2u, in.uv.y >= 0.5);
   if (((in.mask >> quarter) & 1u) != 0u) { discard; }
-  return shade(in, dmx, dmy, false, facet, false);
+  var seen = in;
+  if (!front) { seen.normal = -in.normal; }
+  return shade(seen, dmx, dmy, !front, facet, false);
 }
 
 // Whether a point (camera-relative) is inside a portal's opening: its

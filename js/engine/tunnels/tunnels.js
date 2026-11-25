@@ -395,6 +395,7 @@ export class TunnelSet {
       rule: null, section: null, fit: null, skipped: false, entry: null, sig: '', meshWanted: false, meshBusy: false, mesh: null, failed: 0,
       behind: false,   // its placing changed while its mesh was made (#advance)
       provisional: false,   // a portal's floor waits for its bridge's deck (#advance, the probe's grade)
+      portalAt: null,       // per end, its portal's floor as it was last placed with ([h0, h1], NaN none: #railNetwork)
     };
   }
 
@@ -440,8 +441,9 @@ export class TunnelSet {
       // (A floor found on the ground under its bridge, the deck not in yet, is only for now: #decksCame. From 3.5 km
       // the old Ceneri line's portals onto bridges were up to 15 m low, until the bridges came.)
       if (g.deckless !== undefined) r.provisional = true;
-      // (And how far the road in front as drawn has moved it: alignPortals.)
-      if (g.state === 'done') heights[e] = g.height + (this.lifts.get(portalKey(mine, near.family)) ?? 0);
+      // (And how far the road in front as drawn has moved it: alignPortals. Kept, for the railway network while its
+      // ground is read again: #railNetwork.)
+      if (g.state === 'done') (r.portalAt ??= [NaN, NaN])[e] = heights[e] = g.height + (this.lifts.get(portalKey(mine, near.family)) ?? 0);
       else if (g.state !== 'failed') waiting = true;
     }
     // An end opening into another tube (5.17m): that one's floor there, once it has one (#joinedFloor), so the floor
@@ -596,7 +598,12 @@ export class TunnelSet {
       const fixed = [NaN, NaN];
       for (let e = 0; e < 2; e++) {
         const p = beyond[e] ? null : this.#portalEnd(q, e);
-        if (p?.g.state === 'done') fixed[e] = p.g.height + (this.lifts.get(portalKey(p.mine, 2)) ?? 0);
+        if (!p) continue;
+        // (Its floor as found; while its ground is read again (dropped, or its bridge's deck came), the one it was
+        // placed with: 5.18j, the Ceneri viaduct portal's ground was read again while the network was made, it was
+        // made without that portal, the junction 1 m low, and the viaduct tube kept its floor 2.2 m over the other's.)
+        if (p.g.state === 'done') fixed[e] = p.g.height + (this.lifts.get(portalKey(p.mine, 2)) ?? 0);
+        else if (p.g.state !== 'failed') fixed[e] = q.portalAt?.[e] ?? NaN;
       }
       tubes.push({ key: near.key, length: whole.length, fixed, limit: gradeLimit(q.kind, q.entry) });
       for (const { p, at } of points) {

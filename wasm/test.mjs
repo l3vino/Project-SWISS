@@ -2369,19 +2369,24 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   {
     const pair = tubesFrom([line([[0, -50], [0, 400]], [END.PORTAL, END.PORTAL]), line([[4.5, -50], [4.5, 300]], [END.PORTAL, END.JOIN])]);
     const main = pair.find((t) => t.lines) ?? pair[0], L = main.lines ?? [], LF = 7;
-    let endK = -1, mergeK = -1, worstStep = 0, prev = NaN;
+    let endK = -1, mergeK = -1, worstStep = 0, prev = NaN, prev2 = NaN, bend = 0;
+    const ds = main.length / (L.length / LF - 1);
     for (let k = 0; k + LF <= L.length; k += LF) {
       const a = L[k + 2];
       if (!Number.isNaN(a)) {
         if (!Number.isNaN(prev)) worstStep = Math.max(worstStep, Math.abs(a - prev));
+        if (!Number.isNaN(prev) && !Number.isNaN(prev2)) bend = Math.max(bend, Math.abs(a - 2 * prev + prev2) / (ds * ds));
         if (Math.abs(a) > 4.4) endK = k / LF;
         if (Math.abs(a) < 0.05 && mergeK < 0 && endK >= 0) mergeK = k / LF;
       }
+      prev2 = prev;
       prev = a;
     }
-    const ds = main.length / (L.length / LF - 1), turnout = (mergeK - endK) * ds;
-    joinLine += `; a siding's data ending inside: into the line's track over ${turnout.toFixed(0)} m, at most ${worstStep.toFixed(2)} m across a sample`;
-    if (!(mergeK > endK && turnout > 10 && turnout <= 60 && worstStep < 0.5)) problems.push(`a siding's turnout: from sample ${endK} to ${mergeK} (${turnout} m), ${worstStep} m a sample`);
+    // (5.18j: over to the line's track on two curves of a 1:12 turnout's 500 m, as a crossover between tracks 4.5 m
+    // apart is: 2√(4.5 × 500) = 95 m in all; up to 5.18i a 55 m smoothstep, its curves down to 300 m.)
+    const turnout = (mergeK - endK) * ds, radius = bend > 0 ? 1 / bend : Infinity;
+    joinLine += `; a siding's data ending inside: into the line's track over ${turnout.toFixed(0)} m, its curves 500 m (tightest ${radius.toFixed(0)} m), at most ${worstStep.toFixed(2)} m across a sample`;
+    if (!(mergeK > endK && turnout > 60 && turnout <= 110 && radius > 450 && worstStep < 0.5)) problems.push(`a siding's turnout: from sample ${endK} to ${mergeK} (${turnout.toFixed(1)} m), tightest ${radius.toFixed(0)} m, ${worstStep.toFixed(3)} m a sample`);
   }
   // (5.17q) A curve mapped by nodes 60 m apart on a 400 m radius: the tube follows the arc (5.17p's straight lines
   // between the nodes stood up to 1.1 m inside it, and turned only at them).
