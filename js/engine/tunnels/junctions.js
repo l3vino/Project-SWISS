@@ -144,14 +144,15 @@ export function stationFloor(length, ends, stations) {
 }
 
 /* The steepest a railway's floor may climb (5.18h, for the probe's check): AlpTransit's flat route 12.5 per mille (the
- * base tunnels: sections.js section 'tube'), a standard-gauge line 25, narrow gauge 70 (the Bernina's adhesion); rack
- * railways and funiculars none. */
+ * base tunnels: sections.js section 'tube'), a standard-gauge line 28 (the Gotthard line's ramps were built at up to
+ * 28, the Lötschberg's at 27: 25 flagged the old Ceneri line's tunnels, 2.1–2.5% as measured), narrow gauge 70 (the
+ * Bernina's adhesion); rack railways and funiculars none. */
 export function gradeLimit(kind, entry) {
   const id = kind?.id ?? '';
   if (id === 'rack' || id === 'rack_rail' || id === 'funicular') return Infinity;
   if (id === 'narrow_gauge' || entry?.section === 'metre') return 0.07;
   if (entry?.section === 'tube') return 0.0125;
-  return 0.025;
+  return 0.028;
 }
 
 /** The steepest grade of a floor over a tube's length (sampled every `step` metres). */

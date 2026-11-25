@@ -2535,7 +2535,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const floor = stationFloor(519, [222.11, NaN], west.stations);
   const steep = steepest(floor, 519, 1);
   if (!(Math.abs(floor(321) - j2) < 1e-6 && Math.abs(floor(519) - j2) < 1e-6 && steep < 0.0125)) problems.push('the west tube\'s floor through its station');
-  if (gradeLimit({ id: 'rack' }, null) !== Infinity || gradeLimit({ id: 'rail' }, { section: 'tube' }) !== 0.0125 || gradeLimit({ id: 'rail' }, null) !== 0.025) problems.push('the grade limits');
+  if (gradeLimit({ id: 'rack' }, null) !== Infinity || gradeLimit({ id: 'rail' }, { section: 'tube' }) !== 0.0125 || gradeLimit({ id: 'rail' }, null) !== 0.028) problems.push('the grade limits');
   console.log(`railway floors through junctions: the Ceneri crossover's junctions at ${j1?.toFixed(2)} and ${j2?.toFixed(2)} m, grades east ${(gEast * 100).toFixed(2)}%, crossover ${(gCross * 100).toFixed(2)}%, west ${(gWest * 100).toFixed(2)}% (4.3% on the crossover alone before) — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }

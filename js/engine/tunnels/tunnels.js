@@ -394,6 +394,7 @@ export class TunnelSet {
       tube, kind, whole: null, wholeAt: null, traceWanted: false, traceHost: '', traced: false,
       rule: null, section: null, fit: null, skipped: false, entry: null, sig: '', meshWanted: false, meshBusy: false, mesh: null, failed: 0,
       behind: false,   // its placing changed while its mesh was made (#advance)
+      provisional: false,   // a portal's floor waits for its bridge's deck (#advance, the probe's grade)
     };
   }
 
@@ -430,11 +431,15 @@ export class TunnelSet {
     const heights = [NaN, NaN];
     let waiting = false;
     const byPortal = [false, false];
+    r.provisional = false;
     for (let e = 0; e < 2; e++) {
       const p = this.#portalEnd(r, e);
       if (!p) continue;
       const { mine, g } = p;
       byPortal[e] = g.state !== 'failed';
+      // (A floor found on the ground under its bridge, the deck not in yet, is only for now: #decksCame. From 3.5 km
+      // the old Ceneri line's portals onto bridges were up to 15 m low, until the bridges came.)
+      if (g.deckless !== undefined) r.provisional = true;
       // (And how far the road in front as drawn has moved it: alignPortals.)
       if (g.state === 'done') heights[e] = g.height + (this.lifts.get(portalKey(mine, near.family)) ?? 0);
       else if (g.state !== 'failed') waiting = true;
@@ -1382,10 +1387,12 @@ function placesOf(tube) {
   return out;
 }
 
-/* A railway tube's steepest grade over its length and its limit (the probe, 5.18h). */
+/* A railway tube's steepest grade over its length and its limit (the probe, 5.18h); one whose portal's floor waits for
+ * its bridge's deck is provisional, not over. */
 function gradeOf(r) {
   const most = steepest(r.floorAt, r.tube.length), limit = gradeLimit(r.kind, r.entry);
-  return { steepest: Math.round(most * 10000) / 100, limit: Number.isFinite(limit) ? limit * 100 : null, over: most > limit + 1e-4 };
+  return { steepest: Math.round(most * 10000) / 100, limit: Number.isFinite(limit) ? limit * 100 : null,
+    over: !r.provisional && most > limit + 1e-4, provisional: r.provisional };
 }
 
 /* A near tube's end as its mesh finishes it. */
