@@ -574,20 +574,20 @@ export class TunnelSet {
       // end there first: groups.js runs it JOIN_INTO back into the bore it opens into), and its near tube's JOIN ends
       // partway along it (5.18h: the Ceneri base tunnel's east tube was traced from its portal, and its near tube
       // started at the junction 200 m in, where the portal's track was grouped into the crossover). Its tunnel on
-      // beyond such a point is the other tube's: the portal there is not fixed for it too (the way to it would count
-      // twice, the junction pulled towards it).
+      // beyond such a point is the other tube's: its end there, a portal or where it opens into another, is not this
+      // one's too (the way to it would count twice, the junction pulled towards it).
       const points = [], beyond = [false, false];
-      for (let e = 0; e < 2; e++) {
-        const we = whole.ends[e];
-        if (we.type !== TUBE_END.JOIN) continue;
-        points.push({ p: near.ends.find((n) => n.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH) ?? we, at: e ? whole.length : 0 });
-      }
       near.ends.forEach((n, e) => {
         if (n.type !== TUBE_END.JOIN || whole.ends.some((we) => we.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH)) return;
         const at = w.s0 + w.sign * (e ? near.length : 0), other = w.s0 + w.sign * (e ? 0 : near.length);
         points.push({ p: n, at });
         beyond[other > at ? 0 : 1] = true;
       });
+      for (let e = 0; e < 2; e++) {
+        const we = whole.ends[e];
+        if (we.type !== TUBE_END.JOIN || beyond[e]) continue;
+        points.push({ p: near.ends.find((n) => n.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH) ?? we, at: e ? whole.length : 0 });
+      }
       const fixed = [NaN, NaN];
       for (let e = 0; e < 2; e++) {
         const p = beyond[e] ? null : this.#portalEnd(q, e);
