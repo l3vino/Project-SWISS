@@ -9,11 +9,13 @@
  * So the railway tubes joined to each other are taken together: each tube's ends and the points along it where
  * another's JOIN end opens into it, or where its own opens into another partway along its tunnel (its stations), are
  * the nodes, the stretches of tube between them the links (as long as they are), the portals' floors (their viaducts'
- * decks among them) fixed. Every other node takes the average
- * of its neighbours' heights, each weighted by one over how far away it is (Gauss–Seidel until it moves under a
- * millimetre): the heights that make the grades along every way between two portals straight and as even as they can
- * be (the least squares of the grades). An end with nothing fixed beyond it runs on level. The same junction now
- * shares its 5.9 m between the west tube and the crossover, each about 0.9%.
+ * decks among them) fixed. Every other node takes the average of its neighbours' heights, each weighted by one over how
+ * far away it is (Gauss–Seidel until it moves under a millimetre): the heights that make the grades along every way
+ * between two portals straight and as even as they can be (the least squares of the grades). An end with nothing fixed
+ * beyond it runs on level. The same junction now shares its 5.9 m between the west tube and the crossover, each about
+ * 0.9%. Then each node is kept within the grade its tubes allow from each of its neighbours (gradeLimit; once the east
+ * tube's tunnel was traced to Vezia, 15.4 km on and 114 m higher, its long climb pulled the junction 200 m from the
+ * portal up to 1.41%, over AlpTransit's 1.25%); where no height keeps them all, the middle of what they ask.
  */
 
 /* Iterations at most, and the millimetres a node may still move when they stop. */
@@ -35,7 +37,8 @@ function unionFind() {
 
 /**
  * The heights through a railway network's junctions.
- * @param tubes  [{ key, length, fixed: [h0, h1] }]: metres; a portal's floor where it is known, NaN otherwise
+ * @param tubes  [{ key, length, fixed: [h0, h1], limit }]: metres; a portal's floor where it is known, NaN otherwise;
+ *               the steepest its floor may climb (gradeLimit; none given: no limit)
  * @param links  [{ from, at, to, s }]: the point `at` metres along tube `from` (an end of it, or partway along where its
  *               tunnel's tube opens into another: 5.18h, a tube is placed by its whole tunnel) lies in tube `to`, `s`
  *               metres along it
@@ -60,17 +63,21 @@ export function railFloors(tubes, links) {
     const a = byKey.get(l.from), b = byKey.get(l.to);
     if (a && b && a !== b) same.join(pointOf(a, l.at), pointOf(b, l.s));
   }
-  // Links between the nodes along each tube, nearest first.
+  // Links between the nodes along each tube, nearest first: [the other node, its weight, the most the two may differ].
   const edges = new Map();
-  const link = (a, b, w) => {
+  const link = (a, b, w, most) => {
     if (a === b) return;
     if (!edges.has(a)) edges.set(a, []);
     if (!edges.has(b)) edges.set(b, []);
-    edges.get(a).push([b, w]); edges.get(b).push([a, w]);
+    edges.get(a).push([b, w, most]); edges.get(b).push([a, w, most]);
   };
-  for (const [, list] of along) {
+  for (const [key, list] of along) {
+    const limit = byKey.get(key).limit ?? Infinity;
     list.sort((p, q) => p[0] - q[0]);
-    for (let i = 1; i < list.length; i++) link(same.find(list[i - 1][1]), same.find(list[i][1]), 1 / Math.max(1, list[i][0] - list[i - 1][0]));
+    for (let i = 1; i < list.length; i++) {
+      const d = list[i][0] - list[i - 1][0];
+      link(same.find(list[i - 1][1]), same.find(list[i][1]), 1 / Math.max(1, d), Number.isFinite(limit) ? limit * d : Infinity);
+    }
   }
   // The fixed heights (a node fixed twice, two portals as one: their mean).
   const fixed = new Map();
@@ -97,20 +104,30 @@ export function railFloors(tubes, links) {
   const mean = new Map();
   for (const [id, f] of fixed) { const r = nets.find(id), m = mean.get(r) ?? { sum: 0, n: 0 }; m.sum += f.sum / f.n; m.n++; mean.set(r, m); }
   for (const [id, v] of h) if (!Number.isFinite(v)) { const m = mean.get(nets.find(id)); h.set(id, m.sum / m.n); }
-  // Gauss–Seidel: each loose node the weighted mean of its neighbours.
-  for (let round = 0; round < ROUNDS; round++) {
-    let moved = 0;
-    for (const [id, list] of edges) {
-      if (fixed.has(id) || !h.has(id)) continue;
-      let sw = 0, sh = 0;
-      for (const [b, w] of list) { sw += w; sh += w * h.get(b); }
-      if (!(sw > 0)) continue;
-      const v = sh / sw;
-      moved = Math.max(moved, Math.abs(v - h.get(id)));
-      h.set(id, v);
+  // Gauss–Seidel: each loose node the weighted mean of its neighbours; then, from there, each kept within what its
+  // tubes' grades allow from each neighbour (where no height keeps them all, the middle of what they ask: the grades
+  // either side over by as much).
+  const relax = (capped) => {
+    for (let round = 0; round < ROUNDS; round++) {
+      let moved = 0;
+      for (const [id, list] of edges) {
+        if (fixed.has(id) || !h.has(id)) continue;
+        let sw = 0, sh = 0, lo = -Infinity, hi = Infinity;
+        for (const [b, w, most] of list) {
+          const hb = h.get(b);
+          sw += w; sh += w * hb;
+          lo = Math.max(lo, hb - most); hi = Math.min(hi, hb + most);
+        }
+        if (!(sw > 0)) continue;
+        const v = !capped ? sh / sw : lo <= hi ? Math.min(hi, Math.max(lo, sh / sw)) : (lo + hi) / 2;
+        moved = Math.max(moved, Math.abs(v - h.get(id)));
+        h.set(id, v);
+      }
+      if (moved < STILL) break;
     }
-    if (moved < STILL) break;
-  }
+  };
+  relax(false);
+  relax(true);
   // Per tube: its ends and its stations.
   const out = new Map();
   for (const t of tubes) {

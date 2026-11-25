@@ -598,7 +598,7 @@ export class TunnelSet {
         const p = beyond[e] ? null : this.#portalEnd(q, e);
         if (p?.g.state === 'done') fixed[e] = p.g.height + (this.lifts.get(portalKey(p.mine, 2)) ?? 0);
       }
-      tubes.push({ key: near.key, length: whole.length, fixed });
+      tubes.push({ key: near.key, length: whole.length, fixed, limit: gradeLimit(q.kind, q.entry) });
       for (const { p, at } of points) {
         for (const r of rails) {
           // (Its section as fitted, or the rule it starts from: one being fitted again keeps its links meanwhile.)
@@ -1317,7 +1317,8 @@ export class TunnelSet {
       // Its line, [lon, lat, s] at most every 25 m and 60 of them (5.17n: the live checks place cameras along it).
       line: lineSamples(r.tube),
       // A railway's steepest grade and its limit (5.18h, junctions.js gradeLimit): over it, flagged.
-      grade: r.tube.family === 2 && r.floorAt ? gradeOf(r) : null,
+      // (Not of one left undrawn: its floor is none.)
+      grade: r.tube.family === 2 && r.floorAt && !r.skipped ? gradeOf(r) : null,
       rail: r.railSig || null,
       places: r.tube.tracks > 1 || (r.tube.lines && r.tube.lines[0] > 1) ? placesOf(r.tube) : null,
       mesh: r.mesh ? { id: r.mesh.id, triangles: r.mesh.indexCount / 3, bytes: r.mesh.bytes, radius: Math.round(r.mesh.radius),

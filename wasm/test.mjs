@@ -2530,6 +2530,23 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const one = other.get('one'), rest = other.get('rest');
   const jOne = one?.stations.find(([s]) => s === 200)?.[1], jRest = rest?.stations.find(([s]) => s === 7048)?.[1], k = one?.stations.find(([s]) => s === 339)?.[1];
   const gr = [(jOne - 216.32) / 200, (k - jOne) / 139, (222.11 - k) / 322];
+  // The east tube's tunnel traced on to its far portal at Vezia, 15.4 km on and 114 m higher (as one load did): its
+  // long climb pulled the junction to 1.41% over the 200 m from the portal; each stretch is kept to its tube's 1.25%.
+  const far = railFloors([
+    { key: 'east', length: 15445, fixed: [216.23, 330.4], limit: 0.0125 },
+    { key: 'west', length: 519, fixed: [222.11, NaN], limit: 0.0125 },
+    { key: 'cross', length: 138, fixed: [NaN, NaN], limit: 0.0125 },
+  ], [{ from: 'cross', at: 0, to: 'east', s: 200 }, { from: 'cross', at: 138, to: 'west', s: 321 }]);
+  const fJ = far.get('east')?.stations[0]?.[1], fK = far.get('west')?.stations[0]?.[1];
+  const fg = [(fJ - 216.23) / 200, Math.abs(fK - fJ) / 138, Math.abs(222.11 - fK) / 321];
+  if (!(Math.max(...fg) <= 0.0125 + 1e-5)) problems.push(`grades with the far portal ${fg.map((g) => (g * 100).toFixed(2)).join('/')}%`);
+  // Two portals too near for their heights (5.9 m over 300 m, 1.25% allowing 3.75 m): the grades either side as even.
+  const tight = railFloors([
+    { key: 'a', length: 150, fixed: [216.23, NaN], limit: 0.0125 },
+    { key: 'b', length: 150, fixed: [222.13, NaN], limit: 0.0125 },
+  ], [{ from: 'a', at: 150, to: 'b', s: 150 }]);
+  const tJ = tight.get('a')?.ends[1];
+  if (!(Math.abs(tJ - 219.18) < 0.01)) problems.push(`two portals too near: their junction at ${tJ?.toFixed(2)} (219.18 even)`);
   if (!(Math.abs(jOne - jRest) < 1e-6)) problems.push(`a junction partway along a tunnel: ${jOne?.toFixed(2)} and ${jRest?.toFixed(2)}`);
   if (!(Math.max(...gr) < 0.0125 && Math.max(...gr) - Math.min(...gr) < 0.0005)) problems.push(`grades by a junction partway along a tunnel ${gr.map((g) => (g * 100).toFixed(2)).join('/')}%`);
   const floor = stationFloor(519, [222.11, NaN], west.stations);
