@@ -2507,7 +2507,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     { key: 'east', length: 6000, fixed: [216.23, NaN] },
     { key: 'west', length: 519, fixed: [222.11, NaN] },
     { key: 'cross', length: 138, fixed: [NaN, NaN] },
-  ], [{ from: 'cross', end: 0, to: 'east', s: 204 }, { from: 'cross', end: 1, to: 'west', s: 321 }]);
+  ], [{ from: 'cross', at: 0, to: 'east', s: 204 }, { from: 'cross', at: 138, to: 'west', s: 321 }]);
   const east = net.get('east'), west = net.get('west'), cross = net.get('cross');
   const j1 = east?.stations[0]?.[1], j2 = west?.stations[0]?.[1];
   const gCross = Math.abs(cross.ends[1] - cross.ends[0]) / 138, gWest = Math.abs(222.11 - j2) / 321, gEast = Math.abs(j1 - 216.23) / 204;
@@ -2518,6 +2518,20 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (!(Math.abs(east.ends[1] - j1) < 0.01)) problems.push(`the east tube's far end ${east.ends[1]?.toFixed(2)} (its junction ${j1?.toFixed(2)})`);
   // A network with nothing fixed: no floors from it.
   if (railFloors([{ key: 'a', length: 100, fixed: [NaN, NaN] }], []).size) problems.push('a network with nothing fixed was given floors');
+  // The same junction grouped the other way (as one load did): the east portal's track runs on into the crossover and
+  // the west tube ('one'), the east tube's tube ('rest', placed by its whole 7248 m tunnel) starts at the junction 200 m
+  // in, partway along its tunnel (tunnels.js leaves the portal beyond that point to 'one'). Its junction is a station
+  // of its own, as high as the other's, and the grades as even as the other way.
+  const other = railFloors([
+    { key: 'one', length: 6181, fixed: [216.32, NaN] },
+    { key: 'rest', length: 7248, fixed: [NaN, NaN] },
+    { key: 'west', length: 322, fixed: [222.11, NaN] },
+  ], [{ from: 'rest', at: 7048, to: 'one', s: 200 }, { from: 'west', at: 322, to: 'one', s: 339 }]);
+  const one = other.get('one'), rest = other.get('rest');
+  const jOne = one?.stations.find(([s]) => s === 200)?.[1], jRest = rest?.stations.find(([s]) => s === 7048)?.[1], k = one?.stations.find(([s]) => s === 339)?.[1];
+  const gr = [(jOne - 216.32) / 200, (k - jOne) / 139, (222.11 - k) / 322];
+  if (!(Math.abs(jOne - jRest) < 1e-6)) problems.push(`a junction partway along a tunnel: ${jOne?.toFixed(2)} and ${jRest?.toFixed(2)}`);
+  if (!(Math.max(...gr) < 0.0125 && Math.max(...gr) - Math.min(...gr) < 0.0005)) problems.push(`grades by a junction partway along a tunnel ${gr.map((g) => (g * 100).toFixed(2)).join('/')}%`);
   const floor = stationFloor(519, [222.11, NaN], west.stations);
   const steep = steepest(floor, 519, 1);
   if (!(Math.abs(floor(321) - j2) < 1e-6 && Math.abs(floor(519) - j2) < 1e-6 && steep < 0.0125)) problems.push('the west tube\'s floor through its station');

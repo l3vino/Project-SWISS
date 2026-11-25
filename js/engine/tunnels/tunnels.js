@@ -568,29 +568,41 @@ export class TunnelSet {
     this.railAt = now;
     const tubes = [], links = [];
     const rails = [...this.records.values()].filter((r) => r.tube.family === 2 && !r.dropped);
-    for (const r of rails) {
-      const fixed = [NaN, NaN];
-      for (let e = 0; e < 2; e++) {
-        const p = this.#portalEnd(r, e);
-        if (p?.g.state === 'done') fixed[e] = p.g.height + (this.lifts.get(portalKey(p.mine, 2)) ?? 0);
-      }
-      tubes.push({ key: r.tube.key, length: (r.whole ?? r.tube).length, fixed });
-    }
     for (const q of rails) {
-      const whole = q.whole ?? q.tube;
+      const near = q.tube, whole = q.whole ?? near, w = q.wholeAt ?? { s0: 0, sign: 1 };
+      // Where it opens into another, metres along its whole tunnel: that tunnel's JOIN ends (its near tube's own JOIN
+      // end there first: groups.js runs it JOIN_INTO back into the bore it opens into), and its near tube's JOIN ends
+      // partway along it (5.18h: the Ceneri base tunnel's east tube was traced from its portal, and its near tube
+      // started at the junction 200 m in, where the portal's track was grouped into the crossover). Its tunnel on
+      // beyond such a point is the other tube's: the portal there is not fixed for it too (the way to it would count
+      // twice, the junction pulled towards it).
+      const points = [], beyond = [false, false];
       for (let e = 0; e < 2; e++) {
         const we = whole.ends[e];
         if (we.type !== TUBE_END.JOIN) continue;
-        // (Its near tube's own JOIN end there first: groups.js runs it JOIN_INTO back into the bore it opens into.)
-        const ne = q.tube.ends.find((n) => n.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH) ?? we;
+        points.push({ p: near.ends.find((n) => n.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH) ?? we, at: e ? whole.length : 0 });
+      }
+      near.ends.forEach((n, e) => {
+        if (n.type !== TUBE_END.JOIN || whole.ends.some((we) => we.type === TUBE_END.JOIN && distance(n, we) < JOIN_MATCH)) return;
+        const at = w.s0 + w.sign * (e ? near.length : 0), other = w.s0 + w.sign * (e ? 0 : near.length);
+        points.push({ p: n, at });
+        beyond[other > at ? 0 : 1] = true;
+      });
+      const fixed = [NaN, NaN];
+      for (let e = 0; e < 2; e++) {
+        const p = beyond[e] ? null : this.#portalEnd(q, e);
+        if (p?.g.state === 'done') fixed[e] = p.g.height + (this.lifts.get(portalKey(p.mine, 2)) ?? 0);
+      }
+      tubes.push({ key: near.key, length: whole.length, fixed });
+      for (const { p, at } of points) {
         for (const r of rails) {
           // (Its section as fitted, or the rule it starts from: one being fitted again keeps its links meanwhile.)
           const half = r.section?.half ?? r.rule?.half;
           if (r === q || !half) continue;
-          const at = this.#inBoreOf(r, ne.lon, ne.lat, half);
-          if (!at) continue;
-          const w = r.wholeAt ?? { s0: 0, sign: 1 };
-          links.push({ from: q.tube.key, end: e, to: r.tube.key, s: w.s0 + w.sign * at.s });
+          const there = this.#inBoreOf(r, p.lon, p.lat, half);
+          if (!there) continue;
+          const wr = r.wholeAt ?? { s0: 0, sign: 1 };
+          links.push({ from: near.key, at, to: r.tube.key, s: wr.s0 + wr.sign * there.s });
           break;
         }
       }
