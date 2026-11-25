@@ -59,6 +59,11 @@ const RAIL_RUN = 10;
 /* Metres a spine's hint may lie off a chain's line and be on it (5.18a: tunnels.js puts them where a branch has left
  * the line it shared a bore with, ~15 m off it by Giubiasco). */
 const HINT_OFF = 5;
+/* The order of a cluster's spines (5.18i): the longer first only up to SPINE_CAP metres, and only by more than SPINE_TIE
+ * (5.18a took the longest: by Giubiasco the Ceneri base tunnel's east line and the line into its west tube leave one
+ * mouth and ran 6180 m each to the tiles' edge, the longer by under a metre, whichever the tiles in at the time made
+ * so; over 50 orders of the same tiles coming in, the junction came out 8 ways: tools/grouping-test.mjs). */
+const SPINE_CAP = 2000, SPINE_TIE = 1;
 const FAMILY_RAIL = 2;
 const BRANCH_LEAST = 10;
 /* Metres over which the reach is held (the most within WIDTH_HOLD) and then
@@ -172,7 +177,9 @@ export function tubesFrom(runs, priority = {}, hints = []) {
       if (mate < 0 || used[ends[mate].run]) break;
       e = mate;
     }
-    return Object.assign(chainOf(xs, ys, ends[start].family, layer, kinds, [endType(ends[start]), endType(ends[last])]), { oneway });
+    const types = [endType(ends[start]), endType(ends[last])];
+    if (backwards(xs, ys, types)) { xs.reverse(); ys.reverse(); types.reverse(); }
+    return Object.assign(chainOf(xs, ys, ends[start].family, layer, kinds, types), { oneway });
   };
   for (let i = 0; i < ends.length; i++) if (!used[ends[i].run] && ends[i].mate < 0) chains.push(walk(i));
   for (let i = 0; i < rs.length; i++) if (!used[i]) chains.push(walk(2 * i));
@@ -189,11 +196,11 @@ export function tubesFrom(runs, priority = {}, hints = []) {
   const clusters = new Map();
   chains.forEach((c, i) => { const r = find(i); if (!clusters.has(r)) clusters.set(r, []); clusters.get(r).push(c); });
 
-  // 4. Per cluster, bores: the chain left a hint lies on (the highest rank), else the longest, is a spine; what lies
-  // beside it, its width; what lies beyond, more chains. (5.18a: by the longest alone the bore out of a portal followed
-  // whichever line the tiles loaded had the more of: by Giubiasco the Ceneri base tunnel's east line, then, flying in,
-  // the west one, then the east again; the hints keep it on the line a whole tunnel traced from that portal runs on, or
-  // on the one it took before.)
+  // 4. Per cluster, bores: the chain a hint lies on (the highest rank), else the longest up to SPINE_CAP, else the one
+  // from the stronger end, else from the east (firstOf), is a spine; what lies beside it, its width; what lies beyond,
+  // more chains. (5.18a: by the longest alone the bore out of a portal followed whichever line the tiles loaded had the
+  // more of: by Giubiasco the Ceneri base tunnel's east line, then, flying in, the west one, then the east again; the
+  // hints keep it on the line a whole tunnel traced from that portal runs on.)
   const hs = hints.map((h) => ({ x: (h.lon - lon0) * M_LON, y: (h.lat - lat0) * M_LAT, rank: h.rank }));
   const rankOf = (c) => {
     let best = 0;
@@ -208,10 +215,7 @@ export function tubesFrom(runs, priority = {}, hints = []) {
     while (members.length) {
       const ranks = hs.length && members.length > 1 ? members.map(rankOf) : null;
       let si = 0;
-      for (let i = 1; i < members.length; i++) {
-        const better = ranks && ranks[i] !== ranks[si] ? ranks[i] > ranks[si] : members[i].length > members[si].length;
-        if (better) si = i;
-      }
+      for (let i = 1; i < members.length; i++) if (firstOf(members[i], members[si], ranks?.[i] ?? 0, ranks?.[si] ?? 0)) si = i;
       const spine = members[si], others = members.filter((_, i) => i !== si);
       const { tube, left } = boreOf(spine, others, frame, priority);
       if (tube) tubes.push(tube);
@@ -219,6 +223,36 @@ export function tubesFrom(runs, priority = {}, hints = []) {
     }
   }
   return tubes;
+}
+
+/* How strong a chain's end is: a portal, where it opens into another, closed, cut at the tiles' edge. */
+const END_RANK = { [TUBE_END.PORTAL]: 3, [TUBE_END.JOIN]: 2, [TUBE_END.CLOSED]: 1, [TUBE_END.OPEN]: 0 };
+
+/* Whether a chain walked from its first point runs the wrong way (5.18i: it ran as the runs came, and a tube's ends
+ * swapped from load to load): it runs from its stronger end, between two alike from the west (then the south). */
+function backwards(xs, ys, types) {
+  const a = END_RANK[types[0]] ?? 0, b = END_RANK[types[1]] ?? 0, n = xs.length - 1;
+  if (a !== b) return b > a;
+  return xs[n] !== xs[0] ? xs[n] < xs[0] : ys[n] < ys[0];
+}
+
+/* A chain's stronger end, between two alike the more easterly (then northerly): { rank, x, y }. */
+function anchorOf(c) {
+  const [p, q] = [0, 1].map((e) => ({ rank: END_RANK[c.ends[e]] ?? 0, x: e ? c.xs[c.n - 1] : c.xs[0], y: e ? c.ys[c.n - 1] : c.ys[0] }));
+  if (p.rank !== q.rank) return p.rank > q.rank ? p : q;
+  return p.x !== q.x ? (p.x > q.x ? p : q) : p.y >= q.y ? p : q;
+}
+
+/* Whether chain a is a cluster's spine before chain b (their hints' ranks ra, rb), the same whatever order the tiles
+ * came in (5.18i): the higher rank; the longer up to SPINE_CAP, by more than SPINE_TIE; the stronger end; the more
+ * easterly, then northerly, of their ends (by Giubiasco the east line's portal end lies 11 m east of the other's). */
+function firstOf(a, b, ra, rb) {
+  if (ra !== rb) return ra > rb;
+  const la = Math.min(a.length, SPINE_CAP), lb = Math.min(b.length, SPINE_CAP);
+  if (Math.abs(la - lb) > SPINE_TIE) return la > lb;
+  const pa = anchorOf(a), pb = anchorOf(b);
+  if (pa.rank !== pb.rank) return pa.rank > pb.rank;
+  return pa.x !== pb.x ? pa.x > pb.x : pa.y > pb.y;
 }
 
 /* A tube's name: its family and ends to ~10 m, either way round. */

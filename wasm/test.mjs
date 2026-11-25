@@ -2557,6 +2557,28 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (problems.length) process.exitCode = 1;
 }
 
+/* ---- 17e. tubes grouped the same whatever order the tiles come in (engine/tunnels/groups.js, 5.18i): the Ceneri base
+ * tunnel's north end as swisstopo maps it (tools/fixtures/runs-ceneri-north.json, made by tools/grouping-test.mjs
+ * --fetch), its tiles coming in in 20 orders and its runs shuffled in 20: one grouping, the east line from its portal,
+ * the line into the west tube from the junction, the viaduct's track into that. Up to 5.18h (longest first, hints from
+ * the tubes before) 8 ways in 50 orders. */
+{
+  const { fixtureTiles, loadInOrder, signature, seeded, shuffled } = await import('../tools/grouping-test.mjs');
+  const { tubesFrom, TUBE_END, TUBE_POINT } = await import('../js/engine/tunnels/groups.js');
+  const problems = [];
+  const tiles = fixtureTiles();
+  const seen = new Set();
+  for (let i = 0; i < 20; i++) {
+    seen.add(signature(loadInOrder(tiles, seeded(i + 1), tubesFrom, TUBE_END, TUBE_POINT, { hints: false })));
+    seen.add(signature(tubesFrom(shuffled(tiles.flatMap((t) => t.runs), seeded(100 + i)), {}, [])));
+  }
+  const want = '2|89711,461037|89868,461546 4/2 5980; 2|89717,461037|89865,461564 1/2 6180; 2|89860,461562|89870,461533 1/4 320';
+  if (seen.size !== 1) problems.push(`${seen.size} groupings: ${[...seen].join(' | ')}`);
+  else if (!seen.has(want)) problems.push(`grouped as ${[...seen][0]}`);
+  console.log(`tube grouping: the Ceneri junction's tiles in 40 orders, ${seen.size} grouping${seen.size === 1 ? '' : 's'} (8 in 50 up to 5.18h) — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  if (problems.length) process.exitCode = 1;
+}
+
 /* ---- 17b. every module links (tools/linkcheck.mjs, 5.19a): a name imported that another module no longer exports
  * stops the thread that loads it from starting. */
 {

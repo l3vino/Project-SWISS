@@ -350,20 +350,20 @@ export class TunnelSet {
   }
 
   /* Where the bores' spines are to run (groups.js hints, 5.18a): from each portal of a whole tunnel traced, the point
-   * HINT_IN along it (rank 2: the line it goes on along); from each portal of a tube as it is, the same (rank 1: the
-   * line its bore took before). At most 60% along a shorter one; beyond where a branch leaves the line it shares a
-   * bore with out of the portal (~230 m by Giubiasco) and before the lines are far apart. */
+   * HINT_IN along it (rank 2: the line it goes on along). At most 60% along a shorter one; beyond where a branch leaves
+   * the line it shares a bore with out of the portal (~230 m by Giubiasco) and before the lines are far apart. (Up to
+   * 5.18h also from each portal of a tube as it was, rank 1, the line its bore took before: that kept whatever the
+   * first tiles in had made, and the Ceneri junction came out 4 ways over 7 loads; groups.js now orders spines the same
+   * whatever tiles came first, tools/grouping-test.mjs.) */
   #spineHints() {
     const hints = [];
-    const add = (t, rank) => {
+    for (const w of this.wholes) {
       for (let e = 0; e < 2; e++) {
-        if (t.ends[e].type !== TUBE_END.PORTAL) continue;
-        const p = pointAlong(t, e, Math.min(HINT_IN, 0.6 * t.length));
-        if (p) hints.push({ lon: p[0], lat: p[1], rank });
+        if (w.ends[e].type !== TUBE_END.PORTAL) continue;
+        const p = pointAlong(w, e, Math.min(HINT_IN, 0.6 * w.length));
+        if (p) hints.push({ lon: p[0], lat: p[1], rank: 2 });
       }
-    };
-    for (const w of this.wholes) add(w, 2);
-    for (const r of this.records.values()) add(r.tube, 1);
+    }
     return hints;
   }
 
