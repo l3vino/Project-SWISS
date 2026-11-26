@@ -639,7 +639,7 @@ export class TunnelSet {
     for (const r of this.records.values()) {
       if (r.tube.family !== 2 || !r.floorAt || !r.joins) continue;
       for (const [e, j] of r.joins) {
-        const q = [...this.records.values()].find((x) => x.tube.key === j.with);
+        const q = this.records.get(j.key);
         if (!q?.floorAt || !q.tube.lines) continue;
         const end = r.tube.ends[e], at = placeOn(q.tube, end.lon, end.lat);
         const p = q.tube.points, n = p.length / TUBE_POINT, L = q.tube.lines;
