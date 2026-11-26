@@ -413,6 +413,9 @@ export class TunnelSet {
   /* ---- a tube's way to a mesh ----------------------------------------------- */
 
   #advance(r) {
+    // (A road or path under a railway is fitted again once the railways' profiles near it change: its fit takes their
+    // ground as shaped, #underRails; one left out for want of ground over it is settled, and was never looked at again.)
+    if (r.settled && r.formKey !== undefined && r.formKey !== this.formation?.madeNear(r.lonlatBox ??= lineBox(r.tube.points))) r.settled = false;
     if (r.settled) return;
     // (The ground it waits for, gathered afresh by #groundFor: #pick fetches the nearest tube's first.)
     if (r.grounds) r.grounds.length = 0; else r.grounds = [];
@@ -502,6 +505,7 @@ export class TunnelSet {
     // (A road or path under a railway: fitted under the railway's ground as shaped, whose profiles near it are in its
     // signature: it is fitted again as they come.)
     const form = near.family !== 2 && this.formation ? this.formation.madeNear(r.lonlatBox ??= lineBox(near.points)) : '';
+    if (near.family !== 2 && this.formation) r.formKey = form;
     const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}|${form}`;
     if (sig === r.sig) return;
     // (One whose mesh is still being made is placed again once that is in: #mesh leaves it unsettled. 5.18h: the
