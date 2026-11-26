@@ -1378,6 +1378,9 @@ rpc.on('spawn', ({ lon, lat, elevation, label }) => {
   setMode('walk', { arrive: true });
 });
 rpc.on('resize', ({ width, height, dpr }) => frame?.resize(width, height, dpr));
+// The page is being left (main.js, on pagehide): no more frames into its canvas as it goes (5.18m: one drawn while
+// the page reloaded took an invalid texture from it, a GPU error in the console).
+rpc.on('stop', () => frame?.stop());
 
 /* For diagnosing: nothing new is requested while paused, so what remains is
  * the cost of drawing and of the selection itself. */

@@ -246,6 +246,8 @@ async function start() {
   const sendSize = () => render.send('resize', viewportSize());
   new ResizeObserver(sendSize).observe(document.documentElement);
   addEventListener('resize', sendSize);
+  // Leaving the page (a reload, the app's own update, closing it): the render thread stops drawing first.
+  addEventListener('pagehide', () => render.send('stop'));
 
   console.info('[swissgpu]', {
     gpu: info.gpu, adapter: info.adapter, features: info.features, blockCompression: info.bc,
