@@ -251,8 +251,11 @@ fn inBore(rel : vec3f) -> u32 {
   let last = min(cutSlot.count, CUT_MOST);
   var found = 0u;
   for (var i = 0u; i < last; i++) {
-    let c = cutSlot.list[i];
+    var c = cutSlot.list[i];
     let apron = c.low.z < 0.0;
+    // (From under the floor all across, under the walkways too, not from under their tops beside it: 5.18m, by a
+    // tube's mouth with no cutting round it any more the ground showed in slivers along the walkways' kerbs.)
+    if (!apron) { c.low.z = 0.0; }
     let r = cutAt(c, q.xyz, select(0.02, 0.0, apron), 1.0);
     // (No early way out of the loop: one count of steps for every pixel.)
     let inside = r.y > 0.0;
