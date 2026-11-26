@@ -131,7 +131,9 @@ enum { TUNNEL_OK = 0, TUNNEL_BAD = 1, TUNNEL_OOM = 2 };
 enum { MAT_FLOOR = 1, MAT_WALKWAY = 2, MAT_WALL = 3, MAT_VAULT = 4, MAT_COLLAR = 5, MAT_DARK = 6, MAT_CEILING = 7, MAT_FIXTURE = 8,
   MAT_RAIL = 9, MAT_INSULATOR = 10, MAT_LAMP = 11,
   MAT_BED = 12 /* a track's bed on the floor (5.17q): its sleepers or its slab, drawn against bedAcross */,
-  MAT_WING = 13 /* a portal's concrete (5.17v): its headwall and wing walls, light, with its formwork's marks */ };
+  MAT_WING = 13 /* a portal's concrete (5.17v): its headwall and wing walls, light, with its formwork's marks */,
+  MAT_CAP = 14 /* the cap past an end opening into another tube (5.18m): drawn as a wall, left out wherever it lies in
+                * that one's room (tunnel.wgsl fsMeet), not only from MEET_IN in as walls are */ };
 
 typedef struct { double x, y, z; } V3;
 INLINE V3 v3(double x, double y, double z) { V3 r = { x, y, z }; return r; }
@@ -1291,7 +1293,7 @@ EXPORT u32 tunnel_mesh(u32 specOff, u32 pointsOff, u32 profileOff, u32 resOff) {
       u32 base = o.nv;
       double mid = R->off, mh = spring + (ch - spring) * (ch > spring ? m_sqrt(R->wide > 0.05 ? R->wide : 1.0) : 1.0);
       V3 n = scale(out, -1.0), c0 = type == END_JOIN ? add(F.c, scale(out, JOIN_CAP_OUT)) : F.c;
-      u32 mat = type == END_DARK ? MAT_DARK : MAT_WALL;
+      u32 mat = type == END_DARK ? MAT_DARK : type == END_JOIN ? MAT_CAP : MAT_WALL;
       put_vertex(&o, add(c0, add(scale(F.right, mid), scale(F.up, mh))), n, mat, R->s, mid, mh,
         R->mx + R->tn * mid * R->ppm, R->my + R->te * mid * R->ppm);
       for (u32 k = 0; k < nr; k++) {

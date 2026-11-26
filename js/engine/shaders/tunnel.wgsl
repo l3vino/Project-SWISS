@@ -57,6 +57,7 @@ const T_INSULATOR : u32 = 10u;
 const T_LAMP    : u32 = 11u;
 const T_BED     : u32 = 12u;
 const T_WING    : u32 = 13u;   // a portal's concrete (5.17v): its headwall and wing walls
+const T_CAP     : u32 = 14u;   // the cap past an end opening into another tube (5.18m): a wall, left out in that one's room
 // Metres outside the other's room a fitting still goes (5.17q: a handrail along a wall left out at a junction stood
 // across the opening in the hand's width of wall left at its edge, live by Giubiasco).
 const MEET_FITTING : f32 = 0.25;   // a track's bed on the floor (5.17q): `bed` metres across from its middle
@@ -634,7 +635,7 @@ fn tDaylight(in : VSOut, n : vec3f) -> vec3f {
 // A luminaire itself, where it hangs: a bright strip `lampSize` long. `fw`,
 // `fa`: metres a pixel spans along and across.
 fn tLuminaire(in : VSOut, fw : f32, fa : f32) -> vec3f {
-  if (tube.lampStep <= 0.0 || (in.material != T_VAULT && in.material != T_CEILING && in.material != T_WALL)) { return vec3f(0.0); }
+  if (tube.lampStep <= 0.0 || (in.material != T_VAULT && in.material != T_CEILING && in.material != T_WALL && in.material != T_CAP)) { return vec3f(0.0); }
   let u = in.along - round(in.along / tube.lampStep) * tube.lampStep;
   let along = vtBand(abs(u), 0.5 * tube.lampSize, fw);
   let across = vtBand(length(in.ah - in.lamp), 0.12, fa);
@@ -666,7 +667,10 @@ fn fs(in : VSOut) -> @location(0) vec4f {
 // lie at one height both stay, and the higher of two goes only where the other's room is under it (a walkway running
 // on into the other tube stops at its edge). Floors stay: a branch's floor runs on into the room it opens into, at one
 // height with that one's where they meet, and where they part the higher shows (left out, the lower would show
-// through as a trench). `own`: the point's height over this tube's own floor (its cross-section's, tunnel.c).
+// through as a trench). The cap past an end opening into the other (T_CAP) goes wherever it lies in that one's room,
+// not only from MEET_IN in (5.18m: where the branch's crown stood 0.12 m under the cavern's vault its cap's top stayed,
+// a band across the top of the way into the cavern, seen from the branch but not from the cavern, which it faces
+// away from). `own`: the point's height over this tube's own floor (its cross-section's, tunnel.c).
 const MEET_IN : f32 = 0.5;
 const MEET_FIT : f32 = 0.99;
 const MEET_UNDER : f32 = 0.08;
@@ -718,7 +722,8 @@ fn fsMeet(in : VSOut) -> @location(0) vec4f {
   let track = in.material == T_BED || in.material == T_RAIL;
   var leftOut = false;
   if (!track && in.material != T_FLOOR) {
-    leftOut = inMeets(in.rel, in.ah.y, onTop, select(-MEET_IN, MEET_FITTING, in.material == T_FIXTURE || in.material == T_INSULATOR));
+    let fitting = in.material == T_FIXTURE || in.material == T_INSULATOR;
+    leftOut = inMeets(in.rel, in.ah.y, onTop, select(select(-MEET_IN, 0.0, in.material == T_CAP), MEET_FITTING, fitting));
   }
   if (leftOut && !MEET_SHOW) { discard; }
   tNoMarks = in.material == T_FLOOR && onOther(in.rel);

@@ -1847,7 +1847,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (!collars) problems.push('no collar at the portal');
     // (5.17p) An end opening into another tube (JOIN): closed by a cap 5 cm past it, facing in (fsMeet leaves out what of
     // it lies in the other's room: live by Giubiasco the room under the main's walkway open to the distance past the
-    // branch's end).
+    // branch's end). Of its own material since 5.18m (tunnel.c MAT_CAP, 14: left out wherever it lies in that room).
     {
       const mj = buildTunnelMesh(core, { origin: [...origin], ends: [MESH_END.JOIN, MESH_END.WALL], spring: sec.spring, ringStep: 25, collar: 0.8, collarDepth: 6 }, mp.points, sec.points);
       const g32 = new Float32Array(mj.vertices.buffer, mj.vertices.byteOffset, mj.vertices.byteLength / 4);
@@ -1859,7 +1859,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
       let capTris = 0, capWrong = 0;
       for (let t = 0; t < mj.indexCount; t += 3) {
         const vs = [gi[t], gi[t + 1], gi[t + 2]];
-        if (!vs.every((v) => g16[v * 26 + 9] === 3 && Math.abs(g32[v * 13 + 5] - s0) < 1e-4)) continue;
+        if (!vs.every((v) => g16[v * 26 + 9] === 14 && Math.abs(g32[v * 13 + 5] - s0) < 1e-4)) continue;
         capTris++;
         vs.forEach((v) => capV.add(v));
         const a = vs.map((v) => [g32[v * 13], g32[v * 13 + 1], g32[v * 13 + 2]]);
@@ -2362,6 +2362,12 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     const one = outlineAt(cs, 1), p1 = [0, 0, 0, one.half, 0, 10, 0, one.half, one.top, one.archY, one.archA, one.archH, one.top, one.archY, one.archA, one.archH, one.inner, one.inner, 0, one.lowR];
     const walk = cutAt(p1, 0, 2.7, 5, 0.2, 0.02, 1, true), room = cutAt(p1, 0, 2.7, 5, 0.2, -0.1, 0.99), past = cutAt(p1, 0, 3.3, 5, 0.2, 0.02, 1, true);
     if (!walk[1] || room[1] || past[1]) problems.push(`a bored tube's walkways: ground cut ${walk[1]}, room ${room[1]}, outside its circle ${past[1]}`);
+    // (5.18m) A branch's cap (tunnel.c MAT_CAP) goes wherever it lies in this room (tunnel.wgsl fsMeet: grow 0), a wall
+    // only from MEET_IN (0.5 m) in: 0.2 m under its vault (the Ceneri junction's branches' crowns stand 0.12 m under
+    // their caverns' vaults: their caps' tops stayed, a band across the top of the way into the cavern).
+    const vaultTop = one.archY + one.archH * 0.99;
+    const capIn = cutAt(p1, 0, 0, 5, vaultTop - 0.2, 0, 0.99), wallIn = cutAt(p1, 0, 0, 5, vaultTop - 0.2, -0.5, 0.99);
+    if (!capIn[1] || wallIn[1]) problems.push(`0.2 m under a vault: a cap left out ${capIn[1]}, a wall left out ${wallIn[1]}`);
   }
   // A branch leaving a railway's bore at 5° (groups.js): beside it for its first 230 m (one bore, as wide as both),
   // then a bore of its own from where it leaves. Its open end (JOIN) inside the room it opens into: its line there
