@@ -2175,7 +2175,8 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   // (5.18n) A 40 m road tunnel under a railway on level ground (the bare ground has the railway's bridge left out: no
   // room over the road; by the Ceneri north portal 0.34 m), fitted under the railway's ground as shaped
   // (rail-profiles.js formationAt: the line's profile 5.8 m over the road, level 3.8 m either side, 1:1.5 beyond): a box
-  // under its embankment; on the bare ground alone, not built.
+  // under its embankment from its mapped ends (no open cut through the embankment short of where it covers the box);
+  // on the bare ground alone, not built.
   const { RailProfiles } = await import('../js/engine/tunnels/rail-profiles.js');
   const rails = new RailProfiles({ scheduler: { client: () => ({}) }, ground: null, core: null, send: () => {} });
   const xr = 8.6 + 20 / M, railStretch = Float64Array.of(xr, 46.5 - 100 / 111132, 0, xr, 46.5 + 100 / 111132, 200);
@@ -2186,13 +2187,13 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const fitUnderRails = (shaped) => {
     const pts = fitPoints(roadUnder, true, underSec), heights = new Float64Array(pts.lonlat.length / 2).fill(500);
     if (shaped) for (let i = 0; i < heights.length; i++) heights[i] = Math.max(heights[i], rails.formationAt(pts.lonlat[2 * i], pts.lonlat[2 * i + 1]));
-    return fitTube({ tube: roadUnder, floorAt: () => 500, section: underSec, clearance: clearanceFor(roadUnder, underKind), kind: underKind, short: true, pts, heights });
+    return fitTube({ tube: roadUnder, floorAt: () => 500, section: underSec, clearance: clearanceFor(roadUnder, underKind), kind: underKind, short: true, pts, heights, underRails: shaped });
   };
   const bareFit = fitUnderRails(false), railFit = fitUnderRails(true);
   const underLine = `a road under a railway's embankment (its ground ${onLine.toFixed(2)} m on the line, ${off6.toFixed(2)} m 6 m off, ${off30} 30 m off): ` +
     `${railFit.section ? `a ${railFit.section.height.toFixed(1)} m box under ${railFit.cover.toFixed(2)} m from ${railFit.ends[0].start.toFixed(1)} to ${(40 - railFit.ends[1].start).toFixed(1)} m` : 'not built'} (on the bare ground ${bareFit.section ? 'built' : 'not built'})`;
   if (!(Math.abs(onLine - 505.8) < 1e-3 && Math.abs(off6 - (505.8 - 2.2 / 1.5)) < 1e-3 && off30 === -Infinity && !bareFit.section &&
-        railFit.section && !railFit.section.arch && railFit.cover > 4.5 && railFit.ends[0].start > 5 && railFit.ends[0].start < 18)) problems.push(underLine);
+        railFit.section && !railFit.section.arch && railFit.cover > 4.5 && railFit.ends[0].start === 0 && railFit.ends[1].start === 0)) problems.push(underLine);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).

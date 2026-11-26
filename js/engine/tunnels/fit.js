@@ -176,6 +176,8 @@ export function fitPoints(tube, short = false, section = null) {
  *   spine      its spine as its mesh runs (mesh.js spineOf), for each portal's opening's curve
  *   starts     per end: metres in its tube starts at most (tunnels.js trimStarts: the ground as cut covers it there),
  *              or undefined
+ *   underRails whether the ground over it is a railway's embankment (tunnels.js #underRails): it starts at its
+ *              portals as mapped, as a long one does
  * @returns { section (null: no room for it or no ground over it, not built: the way runs in the open), cover (a short
  *          tube's, metres; NaN none), collarWidth (its
  *          collar's concrete's thickness, metres), floorAt (s => the floor kept under the ground), floor: { ss, zs,
@@ -184,7 +186,7 @@ export function fitPoints(tube, short = false, section = null) {
  *          the tube starts at the mapped portal), start (metres in it starts: where the ground covers it), shell (from
  *          the collar), rise, offset, outline } }
  */
-export function fitTube({ tube, floorAt, section, clearance, kind = null, short, slopes = [0, 0], pts, heights, starts = [], spine = null }) {
+export function fitTube({ tube, floorAt, section, clearance, kind = null, short, slopes = [0, 0], pts, heights, starts = [], spine = null, underRails = false }) {
   const p = tube.points, L = tube.length;
   const none = (cover) => ({ section: null, cover, collarWidth: COLLAR_WIDTH, ends: [null, null] });
   // The ground along the tube, in order: metres along, the ground, how wide the bore is there.
@@ -270,8 +272,11 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
     // A short one (under a road: "nothing goes above the ground", 5.17f) from there, the road on in an open cutting
     // short of it; a long one from its portal as mapped, its concrete showing where the slope is thin over it (5.18m,
     // his words on 5.18l: "make it so that tunnels do not have that entrance default opening. basically just use the
-    // hole?": the cutting dug from its mouth out, walled and floored in concrete, by the Ceneri base tunnel 17 m).
-    f.start = Number.isFinite(cover) ? covered[e] : 0;
+    // hole?": the cutting dug from its mouth out, walled and floored in concrete, by the Ceneri base tunnel 17 m). One
+    // under a railway's embankment from its portal as mapped too, its concrete over it to the embankment's foot (5.18n:
+    // short of where the embankment covered it, an open cut 6 m deep ran 11 m through the embankment beside the outer
+    // track by the Ceneri north portal).
+    f.start = Number.isFinite(cover) && !underRails ? covered[e] : 0;
     f.shell = Math.max(SHELL_LEAST, f.shell - f.start);
     // The terrain's opening from the tube's mouth in (the cutting in front is the road's: vector/portals.js), at
     // least OPEN_LEAST past it.

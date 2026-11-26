@@ -123,6 +123,9 @@ const JOIN_CROSS = 60;
  * (#joinFacing, 5.18m: a branch leaving a junction cavern's end wall 3–6° off; one opening in from the side keeps its
  * own). */
 const FACE_MOST = 0.44;
+/* Metres a railway's ground as shaped must stand over the bare ground at one of a tube's fit points for the tube to
+ * count as passing under its embankment, starting at its portals as mapped (#underRails, fit.js underRails; 5.18n). */
+const RAIL_OVER = 0.5;
 /* Metres a near tube's JOIN end and its whole tunnel's may lie apart and be the same (5.17t: by Giubiasco 23 m), and
  * its portal and a whole tunnel's end that is not one (at Vezia 74 m). */
 const JOIN_MATCH = 60, PORTAL_MATCH = 100;
@@ -518,10 +521,11 @@ export class TunnelSet {
     r.baseAt = (s) => floor(at.s0 + at.sign * s);
     // 4. Fitted to the ground: its section where it is shallow, its portals' faces, its floor kept under the ground;
     // or no room for it at all.
-    const known = fg.state === 'done' ? (form ? this.#underRails(fg.heights, fg.pts) : fg.heights) : null;
+    const rails = fg.state === 'done' && form ? this.#underRails(fg.heights, fg.pts) : null;
+    const known = fg.state === 'done' ? rails?.heights ?? fg.heights : null;
     r.fit = fitTube({
       tube: near, floorAt: r.baseAt, section: r.rule, clearance: clearanceFor(near, r.kind), kind: r.kind, short, slopes,
-      pts: fg.pts, heights: known, starts, spine: known ? spineOf(near, r.rule.half) : null,
+      pts: fg.pts, heights: known, starts, spine: known ? spineOf(near, r.rule.half) : null, underRails: rails?.raised > 0,
     });
     r.floorAt = r.fit.floorAt ?? r.baseAt;
     if (!r.fit.section) {
@@ -687,15 +691,19 @@ export class TunnelSet {
   /* The ground at a tube's fit points (fit.js fitPoints) with the railways over them as the terrain is shaped along
    * them (5.18n, rail-profiles.js formationAt): the bare ground has a railway's bridge over a road or path left out,
    * and the road's tunnel under it saw no room (by the Ceneri north portal 0.34 m of ground over a 40 m road tunnel
-   * under three tracks, their embankment 5.8 m over the road). A copy: the ground's own heights are shared. */
+   * under three tracks, their embankment 5.8 m over the road). A copy (the ground's own heights are shared), and how
+   * many of them were raised: { heights, raised }. */
   #underRails(heights, pts) {
     const out = Float64Array.from(heights), ll = pts.lonlat;
+    let raised = 0;
     for (let i = 0; i < out.length; i++) {
       if (!Number.isFinite(out[i])) continue;
       const f = this.formation.formationAt(ll[2 * i], ll[2 * i + 1]);
-      if (f > out[i]) out[i] = f;
+      if (!(f > out[i])) continue;
+      if (f > out[i] + RAIL_OVER) raised++;
+      out[i] = f;
     }
-    return out;
+    return { heights: out, raised };
   }
 
   /* The way (as tube r runs) its end e faces where it opens into another (mesh.js meshPoints `facing`, 5.18m): along
