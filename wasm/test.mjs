@@ -2231,7 +2231,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   }
   // bore.wgsl cutAt and tunnel.wgsl inMeets, as the shaders have them, over a slot's pieces in its frame: a point
   // (x, y, z) `own` metres over its own tube's floor (a floor's own pixel when onFloor, a walkway's top when flat).
-  const cutAt = (d, k, x, y, z, grow, fit = 1) => {
+  const cutAt = (d, k, x, y, z, grow, fit = 1, solid = false) => {
     const ax = d[k], ay = d[k + 1], az = d[k + 2], hA = d[k + 3], bx = d[k + 4], by = d[k + 5], bz = d[k + 6], hB = d[k + 7];
     const len = Math.hypot(bx - ax, by - ay);
     if (len < 1e-3) return null;
@@ -2243,8 +2243,9 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     const o = [0, 1, 2, 3].map((q) => (q === 0 ? Math.abs(d[k + 8]) + (Math.abs(d[k + 12]) - Math.abs(d[k + 8])) * t : d[k + 8 + q] + (d[k + 12 + q] - d[k + 8 + q]) * t));
     const lift = h - (across > d[k + 16] + (d[k + 17] - d[k + 16]) * t + grow ? d[k + 18] : 0);
     if (h <= o[0] + grow && across <= hA + (hB - hA) * t + grow) return [lift, true];
-    if (h <= o[0] || o[2] <= 0) return [lift, false];
-    const lower = h < o[1] && d[k + 19] > 0 ? d[k + 19] : o[3];
+    const lowR = d[k + 19] < 0 ? -1 - d[k + 19] : d[k + 19];
+    if ((h <= o[0] && !(solid && lowR > 0)) || o[2] <= 0) return [lift, false];
+    const lower = h < o[1] && lowR > 0 ? lowR : o[3];
     const ex = across / Math.max(o[2] * fit + grow, 0.01), ey = (h - o[1]) / Math.max(lower * fit + grow, 0.01);
     return [lift, ex * ex + ey * ey <= 1];
   };
@@ -2326,6 +2327,11 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     const piece = [0, 0, 0, o.half, 0, 10, 0, o.half, o.top, o.archY, o.archA, o.archH, o.top, o.archY, o.archA, o.archH, o.inner, o.inner, o.kerb, o.lowR];
     const r = cutAt(piece, 0, 7, 5, o.archY - 1.6, -0.1, 0.99), r0 = cutAt([...piece.slice(0, 19), 0], 0, 7, 5, o.archY - 1.6, -0.1, 0.99);
     if (!(o.lowR > 3.8) || r[1] || !r0[1]) problems.push(`a wide bored tube's lower half: lowR ${o.lowR}, inside ${r[1]} (stretched ${r0[1]})`);
+    // Its walkways (5.18m): under their top beside the floor, within for the ground (terrain.wgsl inBore, solid: it
+    // showed through them by the Ceneri base tunnel's mouth), not for a room (the meets); outside its circle neither.
+    const one = outlineAt(cs, 1), p1 = [0, 0, 0, one.half, 0, 10, 0, one.half, one.top, one.archY, one.archA, one.archH, one.top, one.archY, one.archA, one.archH, one.inner, one.inner, 0, one.lowR];
+    const walk = cutAt(p1, 0, 2.7, 5, 0.2, 0.02, 1, true), room = cutAt(p1, 0, 2.7, 5, 0.2, -0.1, 0.99), past = cutAt(p1, 0, 3.3, 5, 0.2, 0.02, 1, true);
+    if (!walk[1] || room[1] || past[1]) problems.push(`a bored tube's walkways: ground cut ${walk[1]}, room ${room[1]}, outside its circle ${past[1]}`);
   }
   // A branch leaving a railway's bore at 5° (groups.js): beside it for its first 230 m (one bore, as wide as both),
   // then a bore of its own from where it leaves. Its open end (JOIN) inside the room it opens into: its line there

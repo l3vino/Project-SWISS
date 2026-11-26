@@ -678,7 +678,7 @@ fn inMeets(rel : vec3f, own : f32, onTop : bool, grow : f32) -> bool {
   if (q.w == 0.0) { return false; }
   let last = min(cutSlot.count, CUT_MOST);
   for (var i = 0u; i < last; i++) {
-    let r = cutAt(cutSlot.list[i], q.xyz, grow, MEET_FIT);
+    let r = cutAt(cutSlot.list[i], q.xyz, grow, MEET_FIT, false);
     if (r.y == 0.0) { continue; }
     let under = select(select(-MEET_OVER, MEET_UNDER, abs(own - r.x) <= MEET_TIE), -MEET_TIE, onTop);
     if (r.x >= -under) { return true; }
@@ -694,7 +694,7 @@ fn onOther(rel : vec3f) -> bool {
   let last = min(cutSlot.count, CUT_MOST);
   var found = false;
   for (var i = 0u; i < last; i++) {
-    let r = cutAt(cutSlot.list[i], q.xyz, 0.3, 1.0);
+    let r = cutAt(cutSlot.list[i], q.xyz, 0.3, 1.0, false);
     found = found || (r.y > 0.0 && r.x > -0.3);
   }
   return found;

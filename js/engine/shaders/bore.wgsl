@@ -44,8 +44,11 @@ fn slotPoint(rel : vec3f) -> vec4f {
 // walkways' top), y 1 where it lies along the piece (a quarter metre past its ends where it runs on into the next)
 // and within its outline, `grow` metres more all round (less, where negative), the arch's radii times `fit` (a mesh's
 // arch is a polygon inside its ellipse, by under 1 % of its radii): within its walls up to their top, or under its
-// arch; else 0. Below the floor counts as within: the caller says from how far under it.
-fn cutAt(c : Cut, p : vec3f, grow : f32, fit : f32) -> vec2f {
+// arch; else 0. Below the floor counts as within: the caller says from how far under it. `solid`: what stands beside
+// the floor counts as within too (the ground goes from all of the tube, terrain.wgsl inBore; a room is what is over
+// it, tunnel.wgsl inMeets): a bored tube's walkways stand inside its circle, beside its floor's box (5.18m: there the
+// ground showed through them by a mouth, the Ceneri base tunnel's).
+fn cutAt(c : Cut, p : vec3f, grow : f32, fit : f32, solid : bool) -> vec2f {
   let ab = c.b.xy - c.a.xy;
   let len = length(ab);
   if (len < 1e-3) { return vec2f(0.0); }
@@ -60,11 +63,12 @@ fn cutAt(c : Cut, p : vec3f, grow : f32, fit : f32) -> vec2f {
   let o = mix(vec4f(abs(c.outA.x), c.outA.yzw), vec4f(abs(c.outB.x), c.outB.yzw), t);
   // Beside the floor the walkways: what stands there stands on them.
   let x = h - select(0.0, c.low.z, across > mix(c.low.x, c.low.y, t) + grow);
-  // Within its walls (up to their top), or else under its arch.
+  // Within its walls (up to their top), or else under its arch (for `solid`, under its walls' top too where its lower
+  // half is round).
   if (h <= o.x + grow && across <= mix(c.halfA, c.halfB, t) + grow) { return vec2f(x, 1.0); }
-  if (h <= o.x || o.z <= 0.0) { return vec2f(x, 0.0); }
   // (Under 0 in a mesh's slot of the bores meeting it: a tube it opens into, cuts.js; its lowR is −1 − that.)
   let lowR = select(c.low.w, -1.0 - c.low.w, c.low.w < 0.0);
+  if ((h <= o.x && !(solid && lowR > 0.0)) || o.z <= 0.0) { return vec2f(x, 0.0); }
   let lower = select(o.w, lowR, h < o.y && lowR > 0.0);
   let ex = across / max(o.z * fit + grow, 0.01);
   let ey = (h - o.y) / max(lower * fit + grow, 0.01);
