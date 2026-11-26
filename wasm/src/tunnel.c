@@ -99,7 +99,9 @@ typedef struct {
                            * wall to its right, over the floor)) */
   float bedTop;           /* metres a railway's ballast bed stands over the floor, as the open track's does (5.18c:
                            * track.c BED_TOP), so the open track runs straight in; 0: its bed drawn on the floor */
-} TunnelSpec;             /* 160 bytes (156 and the padding to a double) */
+  float wallY;            /* metres up the middle of the circle its walls run on under its walkways (a bored tube's,
+                           * sections.js wallRound), 0 upright walls: a walkway giving way slides down it (5.18m) */
+} TunnelSpec;             /* 160 bytes */
 
 enum { END_JOIN = 0, END_PORTAL = 1, END_WALL = 2, END_DARK = 3 };
 /* Metres past a JOIN end its cap stands, in the room it opens into (5 cm: past the other's pieces' end there, which is
@@ -169,8 +171,8 @@ static double boreOff, boreWide;
 static double bedAcross;
 
 /* The floor's half-width between the kerbs for one line (the bore stretches it), 0 unknown (TunnelSpec.floorHalf);
- * the section's half-width and its walkways' height (their kerbs). */
-static double floorHalf, sectionHalf, kerbHeight;
+ * the section's half-width and its walkways' height (their kerbs); the middle of a bored tube's circle (wallY). */
+static double floorHalf, sectionHalf, kerbHeight, wallRoundY;
 
 /* How much of the walkways stands where the bore is `wide` lines wide (5.17q): all of it for one line, none from
  * WALK_WIDE more (where a line beside it stretches the bore: from a switch to where a branch leaves, his words on
@@ -305,9 +307,17 @@ __attribute__((noinline)) static Placed placed(const Ring *R, double spring, flo
   p.a = R->off + a * sa;
   p.h = h > spring ? spring + (h - spring) * sh : h;
   /* The walkways give way where the bore is stretched for a line beside it (5.17q, walkway_at): what stands on the
-   * floor beside it, up to the kerbs' height, lowered with them. */
+   * floor beside it, up to the kerbs' height, lowered with them. The walls' foot (beyond the floor's edge) of a bored
+   * tube slides down its circle (5.18m: lowered straight down, the floor stood out of the circle in each corner, and
+   * the ground the bore's cut leaves outside it showed there, by the Ceneri base tunnel's north portal). */
   if (floorHalf > 0.0 && kerbHeight > 0.0 && (a > floorHalf - 1e-3 || a < -floorHalf + 1e-3) && h > 1e-4 && h <= kerbHeight + 1e-3) {
-    p.h = h * walkway_at(sa);
+    const double low = h * walkway_at(sa);
+    if (wallRoundY > 0.0 && (a > floorHalf + 1e-3 || a < -floorHalf - 1e-3)) {
+      const double r2 = (double)a * a + (wallRoundY - h) * (wallRoundY - h), d = wallRoundY - low;
+      const double x = r2 > d * d ? m_sqrt(r2 - d * d) : 0.0;
+      p.a = R->off + (a < 0 ? -x : x) * sa;
+    }
+    p.h = low;
   }
   double ma = na / sa, mh = nh / sh, l = m_sqrt(ma * ma + mh * mh);
   p.na = l > 1e-12 ? ma / l : 0; p.nh = l > 1e-12 ? mh / l : 1;
@@ -1075,6 +1085,7 @@ EXPORT u32 tunnel_mesh(u32 specOff, u32 pointsOff, u32 profileOff, u32 resOff) {
   TunnelResult *res = (TunnelResult *)PTR(resOff);
   memset(res, 0, sizeof(TunnelResult));
   floorHalf = spec->floorHalf; sectionHalf = spec->half; kerbHeight = spec->kerb;
+  wallRoundY = spec->wallY > 0.0f ? spec->wallY : 0.0;
   bedTop = spec->bedTop > 0.0f ? spec->bedTop : 0.0;
   const u32 np = spec->pointCount, nq = spec->profileCount;
   if (np < 2 || nq < 3 || nq > PROFILE_MOST) return (res->status = TUNNEL_BAD);

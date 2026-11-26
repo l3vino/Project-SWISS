@@ -2037,6 +2037,29 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
           Math.abs(lone.toe - 2.14) < 0.01 && Math.abs(shared.toe - 4.24) < 0.01 && shared.between === 0)) {
       problems.push(`raised bed: heads ${lone.headLo}..${lone.headHi}, feet ${lone.foot}, top ${lone.top}, toes ${lone.toe} (2 lines: ${shared.toe}, ${shared.between} between)`);
     }
+    // (5.18m) A bored tube two lines wide, its walkways given way (sections.js circle, tunnel.c walkway_at): its walls'
+    // foot slid down its circle (wallRound), so its room under the arch's middle is within the outline its cut has
+    // (outlineAt: the circle stretched across); lowered straight down, its floor stood 0.7 m out of it in each corner,
+    // and the ground the cut leaves showed there, by the Ceneri base tunnel's north portal.
+    {
+      const { outlineAt, wallRound } = await import('../js/engine/tunnels/sections.js');
+      const cs = circle({ diameter: 7.8, floor: 2.9, walkway: 1.1, kerb: 0.45 }), o2 = outlineAt(cs, 2);
+      const mp4 = meshPoints(t0, floor, cs.half, 20);
+      for (let k = 0; k < mp4.count; k++) { mp4.points[k * 16 + 7] = 0; mp4.points[k * 16 + 8] = 2; }
+      const q = buildTunnelMesh(core, { origin: [...origin], ends: [MESH_END.PORTAL, MESH_END.PORTAL], spring: cs.spring, ringStep: 25, collar: 0.8,
+        collarDepth: 2, floorHalf: cs.low.inner, half: cs.low.half, kerb: cs.kerb, wallY: wallRound(cs) }, mp4.points, cs.points);
+      const f = new Float32Array(q.vertices.buffer, q.vertices.byteOffset, q.vertices.byteLength / 4);
+      const s = new Int16Array(q.vertices.buffer, q.vertices.byteOffset, q.vertices.byteLength / 2);
+      let out = 0, floorTo = 0;
+      for (let v = 0; v < q.vertexCount; v++) {
+        const m = s[v * 26 + 9], a = f[v * 13 + 6], h = f[v * 13 + 7];
+        if (m < 1 || m > 4 || h >= o2.archY) continue;
+        out = Math.max(out, Math.hypot(a / o2.archA, (h - o2.archY) / o2.lowR));
+        if (h < 0.01) floorTo = Math.max(floorTo, Math.abs(a));
+      }
+      railLine += `; a bored tube 2 lines wide: its floor ${floorTo.toFixed(2)} m out, its room under the arch's middle within ${out.toFixed(4)} of its cut's outline`;
+      if (!(wallRound(cs) > 2.6 && out <= 1.001 && floorTo > 5.7)) problems.push(`a bored tube 2 lines wide: its room ${out} of its cut's outline, its floor ${floorTo} m out`);
+    }
     // (5.17t) A portal's cutting: 20 m out of the collar at the first end, its walls 4 m either side of the middle,
     // the left 5 m high falling to 0.5 m, the right 3 m with the ground beside it falling to 2 m under the floor (5.17v:
     // its foot under that), the headwall 10 m: concrete walls and headwall, the floor and the tracks out to its end (the

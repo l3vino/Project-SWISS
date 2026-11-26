@@ -48,7 +48,7 @@ import { geodeticToEcef } from '../../core/math.js';
 import { GroundPoints } from '../terrain/ground-points.js';
 import { TUBE_END, TUBE_POINT, LINE_FLOATS, LINE_MOST } from './groups.js';
 import { placeOn } from './trace.js';
-import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, lookFor, vaultUp, LOOK, MATERIAL } from './sections.js';
+import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, wallRound, lookFor, vaultUp, LOOK, MATERIAL } from './sections.js';
 import { meshPoints, spineOf, middleAt, boreWide, MESH_END, POINT_DOUBLES, HEAD_N, CUT_FOOT } from './mesh.js';
 import { fitPoints, fitTube, SHORT, COLLAR_WIDTH } from './fit.js';
 import { boreCut, addAprons, boreMeets } from './cuts.js';
@@ -1062,8 +1062,10 @@ export class TunnelSet {
       if (look.look === LOOK.RAIL && sec.kerb > 0 && sec.walkway > 0) spec.handrail = sec.kerb + 1.0;
       // A railway's tracks stay a sleeper's half and more in from its kerbs (5.17q: tunnel.c TRACK_EDGE), and its
       // walkways give way where the bore is stretched for a line beside it (tunnel.c walkway_at; sections.js
-      // outlineAt gives the cut the same).
-      if (look.look === LOOK.RAIL) Object.assign(spec, { floorHalf: sec.low.inner ?? sec.low.half, half: sec.low.half, kerb: sec.walkway > 0 ? sec.kerb : 0 });
+      // outlineAt gives the cut the same), down along a bored tube's circle (5.18m, wallRound).
+      if (look.look === LOOK.RAIL) {
+        Object.assign(spec, { floorHalf: sec.low.inner ?? sec.low.half, half: sec.low.half, kerb: sec.walkway > 0 ? sec.kerb : 0, wallY: wallRound(sec) });
+      }
       // Its tracks on a ballast bed as high as the open track's, so that runs straight in (5.18c: tunnel.c bedTop).
       if (look.look === LOOK.RAIL) spec.bedTop = this.trackBed;
       // Its portals' cuttings (5.17t, tunnel.c `cutting`): from the ground out of each collar; until that ground is

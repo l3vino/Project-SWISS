@@ -248,9 +248,16 @@ export function outlineAt(sec, wide = 1) {
     o.archY = sec.spring + (sec.arch.y - sec.spring) * root;
     o.archA = sec.arch.r * wide;
     o.archH = sec.arch.r * root;
-    if (sec.arch.y > sec.low.top + 1e-6 && sec.arch.y <= sec.spring + 1e-6) o.lowR = sec.arch.r;
+    if (wallRound(sec) > 0) o.lowR = sec.arch.r;
   }
   return o;
+}
+
+/** Where a bored tube's walls run on round under its walkways (circle): the height of their circle's middle over the
+ *  floor; 0 where the walls stand upright. Its lower half is that circle (outlineAt lowR), and a walkway giving way
+ *  slides down along it (tunnel.c placed, 5.18m). */
+export function wallRound(sec) {
+  return sec.arch && sec.arch.y > sec.low.top + 1e-6 && sec.arch.y <= sec.spring + 1e-6 ? sec.arch.y : 0;
 }
 
 /** How much higher the vault stands where the bore is `wide` lines wide (tunnel.c vault_up): by the square root of

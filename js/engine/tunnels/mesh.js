@@ -277,6 +277,7 @@ export function buildTunnelMesh(core, spec, points, profile, copy = (u8) => u8.s
     dv.setFloat32(144 + 4 * e, c ? c.tops.length / 2 : 0, true);
   }
   dv.setFloat32(152, spec.bedTop ?? 0, true);
+  dv.setFloat32(156, spec.wallY ?? 0, true);
   const status = core.exports.tunnel_mesh(specOff, pointsOff, profileOff, resOff);
   core.sync();
   if (status !== 0) throw new Error(`tunnel mesh failed (${status})`);
