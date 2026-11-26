@@ -164,6 +164,7 @@ export class TunnelSet {
     this.client = scheduler.client('tunnels', { weight: 1, pick: (cls) => this.#pick(cls) });
     this.enabled = true;
     this.trackBed = TRACK_BED;     // metres a railway tube's bed stands over its floor (setTrack)
+    this.formation = null;         // the railways' ground as shaped (setFormation)
     this.records = new Map();      // tube key → record
     this.retiring = [];            // records gone, drawn until the tubes taking their place are (r.successors)
     this.wholes = [];              // whole tunnels traced this session
@@ -218,6 +219,12 @@ export class TunnelSet {
    *  else lies on the floor; each tube is made again (its signature holds the bed's height). */
   setTrack(on) {
     this.trackBed = on ? TRACK_BED : 0;
+  }
+
+  /** The railways' ground as the terrain is shaped along them (rail-profiles.js RailProfiles: formationAt, madeNear),
+   *  which a road or path tube passing under a railway is fitted under (5.18n). */
+  setFormation(formation) {
+    this.formation = formation;
   }
 
   /** Once a frame: notices new tunnels and keeps every tube's state moving. */
@@ -492,7 +499,10 @@ export class TunnelSet {
     r.unplaced = false;
     // (And where the ground as cut has its tubes start at most: trimStarts.)
     const starts = near.ends.map((n) => (n.type === TUBE_END.PORTAL ? this.starts.get(portalKey(n, near.family)) : undefined));
-    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}`;
+    // (A road or path under a railway: fitted under the railway's ground as shaped, whose profiles near it are in its
+    // signature: it is fitted again as they come.)
+    const form = near.family !== 2 && this.formation ? this.formation.madeNear(r.lonlatBox ??= lineBox(near.points)) : '';
+    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}|${form}`;
     if (sig === r.sig) return;
     // (One whose mesh is still being made is placed again once that is in: #mesh leaves it unsettled. 5.18h: the
     // Ceneri west tube's stations came while its first mesh was made, and it kept its level floor.)
@@ -504,7 +514,7 @@ export class TunnelSet {
     r.baseAt = (s) => floor(at.s0 + at.sign * s);
     // 4. Fitted to the ground: its section where it is shallow, its portals' faces, its floor kept under the ground;
     // or no room for it at all.
-    const known = fg.state === 'done' ? fg.heights : null;
+    const known = fg.state === 'done' ? (form ? this.#underRails(fg.heights, fg.pts) : fg.heights) : null;
     r.fit = fitTube({
       tube: near, floorAt: r.baseAt, section: r.rule, clearance: clearanceFor(near, r.kind), kind: r.kind, short, slopes,
       pts: fg.pts, heights: known, starts, spine: known ? spineOf(near, r.rule.half) : null,
@@ -666,6 +676,20 @@ export class TunnelSet {
         out.push({ from: r.tube.key, end: e, to: q.tube.key, across: r2(across), along: r2(along),
           rise: r2(r.floorAt(e ? r.tube.length : 0) - q.floorAt(at.s)) });
       }
+    }
+    return out;
+  }
+
+  /* The ground at a tube's fit points (fit.js fitPoints) with the railways over them as the terrain is shaped along
+   * them (5.18n, rail-profiles.js formationAt): the bare ground has a railway's bridge over a road or path left out,
+   * and the road's tunnel under it saw no room (by the Ceneri north portal 0.34 m of ground over a 40 m road tunnel
+   * under three tracks, their embankment 5.8 m over the road). A copy: the ground's own heights are shared. */
+  #underRails(heights, pts) {
+    const out = Float64Array.from(heights), ll = pts.lonlat;
+    for (let i = 0; i < out.length; i++) {
+      if (!Number.isFinite(out[i])) continue;
+      const f = this.formation.formationAt(ll[2 * i], ll[2 * i + 1]);
+      if (f > out[i]) out[i] = f;
     }
     return out;
   }

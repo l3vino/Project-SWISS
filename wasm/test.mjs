@@ -1459,6 +1459,17 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (!(noisy.length / 2 >= 2 && noisy.length / 2 <= 60 && wNoisy < 0.12 && steep.length / 2 <= 12 && wSteep < 0.02)) {
       problems.push(`rail profile: ${noisy.length / 2} points within ${wNoisy.toFixed(3)} m; at 7.9% ${steep.length / 2} within ${wSteep.toFixed(3)} m`);
     }
+    // (5.18n) A dip under the line's bridge, which the bare ground has (span_dips): on a 1% grade a notch 24 m across
+    // and 5.8 m deep (the road under the three tracks by the Ceneri base tunnel's north portal) spanned, the profile on
+    // the grade across it; a sag of 0.5 m over 60 m kept (the line's own), and a valley 100 m wide at its floor, 5 m
+    // deep (wider than 60 m: not a bridge's gap) kept.
+    const grade = (s) => 1000 + 0.01 * s;
+    const notch = profileOf((s) => grade(s) - (Math.abs(s - 200) < 12 ? 5.8 * (1 - Math.abs(s - 200) / 12) : 0));
+    const sag = profileOf((s) => grade(s) - (Math.abs(s - 200) < 30 ? 0.25 * (1 + Math.cos((Math.PI * (s - 200)) / 30)) : 0));
+    const valley = profileOf((s) => grade(s) - Math.min(5, Math.max(0, 55 - Math.abs(s - 200))));
+    const wNotch = worst(notch, grade), sagDepth = grade(200) - at(sag, 200), valleyDepth = grade(200) - at(valley, 200);
+    trackLine += `; a 24 m × 5.8 m dip spanned within ${wNotch.toFixed(3)} m of the grade, a 0.5 m sag kept ${sagDepth.toFixed(2)} m deep, a 100 m valley kept ${valleyDepth.toFixed(2)} m deep`;
+    if (!(wNotch < 0.05 && sagDepth > 0.4 && valleyDepth > 4.9)) problems.push(`rail profile dips: notch ${wNotch.toFixed(3)} m off, sag ${sagDepth.toFixed(2)} m, valley ${valleyDepth.toFixed(2)} m`);
   }
   // (a9) A railway line with a given profile (5.18d: shape.c): along the road's line, its profile a metre over the
   // hillside's own ground. The level width follows the profile to a centimetre all along the line through the tile,
@@ -2161,6 +2172,27 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const falling = fitOn(straight(1500, 'rail', 2), (x, y) => Math.max(-0.2, 0.5 * (Math.min(x, 1500 - x) - 3.25)) + Math.min(0, 3 * y), false);
   const f0 = falling.ends[0];
   if (!(f0.shell >= 28.75 && f0.shell <= 36)) problems.push(`a hillside falling away to the right: the outer side ${f0.shell} m (on an even one ${h0.shell} m)`);
+  // (5.18n) A 40 m road tunnel under a railway on level ground (the bare ground has the railway's bridge left out: no
+  // room over the road; by the Ceneri north portal 0.34 m), fitted under the railway's ground as shaped
+  // (rail-profiles.js formationAt: the line's profile 5.8 m over the road, level 3.8 m either side, 1:1.5 beyond): a box
+  // under its embankment; on the bare ground alone, not built.
+  const { RailProfiles } = await import('../js/engine/tunnels/rail-profiles.js');
+  const rails = new RailProfiles({ scheduler: { client: () => ({}) }, ground: null, core: null, send: () => {} });
+  const xr = 8.6 + 20 / M, railStretch = Float64Array.of(xr, 46.5 - 100 / 111132, 0, xr, 46.5 + 100 / 111132, 200);
+  rails.tiles.set('t', { key: 't', lines: [{ line: 1, stretches: [railStretch] }], sent: true,
+    made: [{ prof: Float32Array.of(0, 505.8, 200, 505.8), stretches: [railStretch] }], box: [xr, 46.5 - 100 / 111132, xr, 46.5 + 100 / 111132] });
+  const onLine = rails.formationAt(xr, 46.5), off6 = rails.formationAt(xr + 6 / M, 46.5), off30 = rails.formationAt(xr + 30 / M, 46.5);
+  const roadUnder = straight(40, 'minor'), underKind = kinds.find((k) => k?.id === 'minor'), underSec = sectionFor(roadUnder, underKind, null);
+  const fitUnderRails = (shaped) => {
+    const pts = fitPoints(roadUnder, true, underSec), heights = new Float64Array(pts.lonlat.length / 2).fill(500);
+    if (shaped) for (let i = 0; i < heights.length; i++) heights[i] = Math.max(heights[i], rails.formationAt(pts.lonlat[2 * i], pts.lonlat[2 * i + 1]));
+    return fitTube({ tube: roadUnder, floorAt: () => 500, section: underSec, clearance: clearanceFor(roadUnder, underKind), kind: underKind, short: true, pts, heights });
+  };
+  const bareFit = fitUnderRails(false), railFit = fitUnderRails(true);
+  const underLine = `a road under a railway's embankment (its ground ${onLine.toFixed(2)} m on the line, ${off6.toFixed(2)} m 6 m off, ${off30} 30 m off): ` +
+    `${railFit.section ? `a ${railFit.section.height.toFixed(1)} m box under ${railFit.cover.toFixed(2)} m from ${railFit.ends[0].start.toFixed(1)} to ${(40 - railFit.ends[1].start).toFixed(1)} m` : 'not built'} (on the bare ground ${bareFit.section ? 'built' : 'not built'})`;
+  if (!(Math.abs(onLine - 505.8) < 1e-3 && Math.abs(off6 - (505.8 - 2.2 / 1.5)) < 1e-3 && off30 === -Infinity && !bareFit.section &&
+        railFit.section && !railFit.section.arch && railFit.cover > 4.5 && railFit.ends[0].start > 5 && railFit.ends[0].start < 18)) problems.push(underLine);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).
@@ -2203,7 +2235,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const fitLine = `fit: underpass a ${under.section?.height.toFixed(1)} m box from ${u0?.start} and ${u1?.start} m in (collar ${u0?.collar}), its concrete ${under.collarWidth?.toFixed(2)} m thick; ` +
     `no room: ${none.section ? 'built' : 'not built'}; hillside face ${h0?.face} m in, the tube from ${h0?.start?.toFixed(2)} m in, its outer side ${h0?.shell} m (the hill falling away to its right: ${f0?.shell} m); 3 m of ground over a 60 m one: ${flat.section ? `a ${flat.section.height.toFixed(1)} m box` : 'not built'}, 2.7 m: ${low.section ? 'built' : 'not built'}, a path under 2.6 m: ${pathUnder.section ? `a ${pathUnder.section.height.toFixed(1)} m box` : 'not built'}; ` +
     `under a valley the floor dips ${dip.floor.dipped.toFixed(1)} m (vault ≥ ${worstCover.toFixed(2)} m under the ground, ≤ ${(worstGrade * 100).toFixed(2)}%); ` +
-    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down`;
+    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}`;
   console.log(`tunnels: stand-in ${rail.length} railway tube, ${t0?.tracks} tracks, ${t0?.length.toFixed(0)} m, ends ${t0?.ends.map((e) => e.type).join('/')}; ` +
     `Göschenen ${gRuns.length} runs → ${gTubes.length} tubes; ${meshLine}; ${fitLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;

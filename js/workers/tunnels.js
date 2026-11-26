@@ -87,6 +87,8 @@ rpc.on('init', async ({ wasmModule }) => {
   // The railways' profiles (5.18d), on the same ground as the tunnels' portals.
   rails = new RailProfiles({ scheduler, ground: set.ground, core, send: (key, lines, transfer) => rpc.send('profiles', { key, lines }, transfer) });
   for (const { added, removed } of railsEarly.splice(0)) rails.apply(added, removed);
+  // (A road or path tube under a railway is fitted under the railway's ground as shaped, 5.18n.)
+  set.setFormation(rails);
   ticking = setInterval(tick, TICK_MS);
   return { build: BUILD, name: self.name, sources: sources.map((s) => s.describe()) };
 });

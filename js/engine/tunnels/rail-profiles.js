@@ -17,6 +17,11 @@ import { VIEW } from '../../core/scheduler.js';
 /* The terrain's level the ground is read from (its finest), and the metres between readings along a line. */
 const RAIL_LEVEL = 18;
 const STEP = 2;
+/* A railway's ground as the terrain is shaped along it (formationAt, 5.18n): its profile's height held level LEVEL_HALF
+ * metres either side of its line (a standard-gauge line's half-width and bench: swisstopo-transport.js, pieces.js),
+ * falling FILL_FALL a metre beyond (shape.c FILL_SLOPE, 1:1.5), out to REACH metres. */
+const LEVEL_HALF = 3.8, FILL_FALL = 1 / 1.5, REACH = 20;
+const M_LAT = 111132;
 
 export class RailProfiles {
   /**
@@ -31,10 +36,53 @@ export class RailProfiles {
     this.core = core;
     this.send = send;
     this.client = scheduler.client('rails', { weight: 1, pick: (cls) => this.#pick(cls) });
-    this.tiles = new Map();     // road tile key → { key, lines, lon, lat, lists (while read), sent }
+    this.tiles = new Map();     // road tile key → { key, lines, lon, lat, lists (while read), sent, made, box }
     this.current = null;        // the road tile being read
     this.eye = { lon: 0, lat: 0 };
     this.stats = { tiles: 0, sent: 0, lines: 0, readings: 0, ms: 0 };
+  }
+
+  /**
+   * The railways' ground at a point as the terrain is shaped along them (5.18n): over each line's profile within
+   * LEVEL_HALF of it, falling 1:1.5 beyond, the highest of the lines within REACH whose profiles are made; -Infinity
+   * where none. The tunnels' fit takes it as the ground over a road or path passing under a railway: the bare ground
+   * there has the line's bridge left out (the road's tunnel saw 0.34 m of ground over it by the Ceneri north portal,
+   * where the embankment stands 5.8 m over the road).
+   */
+  formationAt(lon, lat) {
+    let best = -Infinity;
+    const m = 111320 * Math.cos((lat * Math.PI) / 180), dLon = REACH / m, dLat = REACH / M_LAT;
+    for (const t of this.tiles.values()) {
+      const b = t.box;
+      if (!t.made || lon < b[0] - dLon || lon > b[2] + dLon || lat < b[1] - dLat || lat > b[3] + dLat) continue;
+      for (const { prof, stretches } of t.made) {
+        for (const p of stretches) {
+          let d = Infinity, s = 0;
+          for (let i = 0; i + 5 < p.length; i += 3) {
+            const ax = (lon - p[i]) * m, ay = (lat - p[i + 1]) * M_LAT, ux = (p[i + 3] - p[i]) * m, uy = (p[i + 4] - p[i + 1]) * M_LAT;
+            const L2 = ux * ux + uy * uy, f = L2 > 0 ? Math.max(0, Math.min(1, (ax * ux + ay * uy) / L2)) : 0;
+            const e = Math.hypot(ax - ux * f, ay - uy * f);
+            if (e < d) { d = e; s = p[i + 2] + (p[i + 5] - p[i + 2]) * f; }
+          }
+          if (!(d <= REACH)) continue;
+          const z = heightAt(prof, s);
+          if (Number.isFinite(z)) best = Math.max(best, z - Math.max(0, d - LEVEL_HALF) * FILL_FALL);
+        }
+      }
+    }
+    return best;
+  }
+
+  /** The road tiles whose profiles are made within REACH of a box [west, south, east, north] (degrees), as a key:
+   *  it changes when one near it comes or goes (the tunnels' placing signature). */
+  madeNear(box) {
+    const lat = (box[1] + box[3]) / 2, dLon = REACH / (111320 * Math.cos((lat * Math.PI) / 180)), dLat = REACH / M_LAT;
+    let key = '';
+    for (const t of this.tiles.values()) {
+      const b = t.box;
+      if (t.made && !(box[2] < b[0] - dLon || box[0] > b[2] + dLon || box[3] < b[1] - dLat || box[1] > b[3] + dLat)) key += `${t.key},`;
+    }
+    return key;
   }
 
   /** Road tiles whose profiles are still to make (the console's swissgpu.settled waits for none, 5.18e). */
@@ -74,6 +122,10 @@ export class RailProfiles {
     for (const r of t.lists) this.ground.lists.delete(r.key);
     t.lists = null;
     t.sent = true;
+    // (Kept with their lines for formationAt: the profiles themselves go to the render thread.)
+    const byLine = new Map(t.lines.map((l) => [l.line, l.stretches]));
+    t.made = lines.map(([line, p]) => ({ prof: p.slice(), stretches: byLine.get(line) ?? [] }));
+    t.box = boxOf(t.lines);
     this.stats.sent++;
     this.stats.ms += performance.now() - start;
     this.send(t.key, lines, lines.map(([, p]) => p.buffer));
@@ -167,4 +219,29 @@ export class RailProfiles {
     }
     return false;
   }
+}
+
+/* A profile's ([s, z, …], a NaN height at a break) height `s` metres along its line; NaN off it or at a break. */
+function heightAt(prof, s) {
+  if (!(prof.length >= 4) || s < prof[0] || s > prof[prof.length - 2]) return NaN;
+  for (let k = 0; k + 3 < prof.length; k += 2) {
+    if (s > prof[k + 2]) continue;
+    const span = prof[k + 2] - prof[k];
+    return span > 1e-9 ? prof[k + 1] + ((prof[k + 3] - prof[k + 1]) * (s - prof[k])) / span : prof[k + 1];
+  }
+  return NaN;
+}
+
+/* The box [west, south, east, north] (degrees) round a road tile's railway lines' stretches (lon, lat, s, …). */
+function boxOf(lines) {
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const { stretches } of lines) {
+    for (const p of stretches) {
+      for (let i = 0; i + 1 < p.length; i += 3) {
+        box[0] = Math.min(box[0], p[i]); box[1] = Math.min(box[1], p[i + 1]);
+        box[2] = Math.max(box[2], p[i]); box[3] = Math.max(box[3], p[i + 1]);
+      }
+    }
+  }
+  return box;
 }

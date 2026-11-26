@@ -79,8 +79,8 @@ const OVER_SHELL = 0.2, OVER_RUN = 4, SHELL_THINNEST = 0.25, SHELL_LEAST = 3;
  * `bend · d² / 2` right of the straight way in, no deeper than the bore keeps within BEND_TOLERANCE of it. */
 const OVER_VAULT = 0.3, OPEN_PAST = 1.5, OPEN_LEAST = 12, OPEN_MOST = 80, BEND_TOLERANCE = 0.25;
 /* The cover a short tube must fit under: its lower share's, between where each portal's ground first has room for
- * the least tunnel of its kind. */
-const COVER_SHARE = 0.1;
+ * the least tunnel of its kind, or for more where that still holds over HOLD_SHARE of that stretch (5.18n). */
+const COVER_SHARE = 0.1, HOLD_SHARE = 0.5;
 /* Under the ground (underGround): past a portal's mouth (where the ground over the floor first leaves room for the
  * vault and its cover, at most MOUTH_MOST in), the vault and its cover under the ground; the steepest a floor dips
  * (its kind's grade, at most DIP_MOST for a road and DIP_PATH for a path); grade changes eased over EASE metres, the
@@ -206,19 +206,30 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
       // From each portal in, where the ground first has room over the least tunnel of its kind (its clearance, its
       // thinnest roof and the soil over it) and keeps it: short of that the portal's mouth stands in the open; between,
       // the ground must hold it.
-      const least = clearance + LEAST_ROOF;
-      const reach = (k0, step) => {
+      const least = clearance + LEAST_ROOF, full = outlineAt(section).crown + LEAST_ROOF;
+      const reach = (k0, step, need) => {
         for (let k = k0; k >= 0 && k < n; k += step) {
-          if (!(kcs[k] >= least)) continue;
+          if (!(kcs[k] >= need)) continue;
           let ok = true;
-          for (let j = k + step; j >= 0 && j < n && Math.abs(kss[j] - kss[k]) <= OVER_RUN; j += step) if (!(kcs[j] >= least)) { ok = false; break; }
+          for (let j = k + step; j >= 0 && j < n && Math.abs(kss[j] - kss[k]) <= OVER_RUN; j += step) if (!(kcs[j] >= need)) { ok = false; break; }
           if (ok) return k;
         }
         return -1;
       };
-      const a = tube.ends[0].type === TUBE_END.PORTAL ? reach(0, 1) : 0, b = tube.ends[1].type === TUBE_END.PORTAL ? reach(n - 1, -1) : n - 1;
+      const span = (need) => [tube.ends[0].type === TUBE_END.PORTAL ? reach(0, 1, need) : 0, tube.ends[1].type === TUBE_END.PORTAL ? reach(n - 1, -1, need) : n - 1];
+      const [a, b] = span(least);
       if (a < 0 || b < 0 || a > b) return none(Math.max(...kcs));
-      const middle = kcs.slice(a, b + 1).sort((x, y) => x - y);
+      // Its cover over the stretch with room for the most it may need (up to its full section) that still holds over
+      // HOLD_SHARE of the stretch with room for the least (5.18n: under a railway's embankment, its sides falling
+      // 1:1.5, the stretch with room for the least held the thin shoulders: a 2.5 m box under 5.8 m of embankment;
+      // a berm on a bank still gives way to the bank under it).
+      let [ca, cb] = [a, b];
+      const needs = [...new Set(kcs.filter((c) => c > least && c <= full))].sort((x, y) => y - x);
+      for (const need of needs) {
+        const [fa, fb] = span(need);
+        if (fa >= 0 && fb >= 0 && fa <= fb && kss[fb] - kss[fa] >= HOLD_SHARE * (kss[b] - kss[a])) { [ca, cb] = [fa, fb]; break; }
+      }
+      const middle = kcs.slice(ca, cb + 1).sort((x, y) => x - y);
       cover = middle[Math.floor(COVER_SHARE * (middle.length - 1))];
       // As high as there is room for under that; the least box of its kind where not, and to fall back on where the
       // ground turns out to cover the higher one nowhere.
