@@ -24,6 +24,11 @@ const TURN = 0.012;        // radians
 const SHIFT = 0.08;        // metres
 const BEND = 0.08;         // metres the floor strays from its grade at the last point kept
 const KEEP_MOST = 40;      // metres
+/* Metres a junction cavern's end wall takes (5.18m): where the bore's width steps from one sample to the next, a point
+ * this far from the wider one carries the narrower one's bore, so the wall is a plane at the wider sample, not a slope
+ * over the samples' spacing (2 m) across the branch's tube that starts there (its walls inside the slope were left
+ * out, tunnel.wgsl fsMeet: openings in them, the sky through their tops, by the Ceneri base tunnel's north junction). */
+const WALL_THIN = 0.02;
 /* Metres a track's middle stays in from the edge of the floor (tunnel.c TRACK_EDGE: half a sleeper and some). */
 const TRACK_EDGE = 1.5;
 const EQUATOR = 2 * Math.PI * 6378137;
@@ -86,6 +91,13 @@ export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, f
     for (let i = 1; i < LINE_FLOATS; i++) if (Number.isNaN(L[k * LINE_FLOATS + i]) !== Number.isNaN(L[(k - 1) * LINE_FLOATS + i])) return true;
     return false;
   };
+  // Where the bore's width steps from sample k − 1 to k: a point WALL_THIN from the wider one towards the other, with the
+  // other's bore and lines (its position from `at` towards `toward`, its bore from `bore`); else null.
+  const wallAt = (k) => {
+    const o = k * TUBE_POINT, q = o - TUBE_POINT, span = p[o + 2] - p[q + 2];
+    if (!(Math.abs(p[o + 4] - p[q + 4]) > SHIFT) || !(span > 2 * WALL_THIN)) return null;
+    return p[o + 4] < p[q + 4] ? { at: k - 1, toward: k, f: WALL_THIN / span, bore: k } : { at: k, toward: k - 1, f: WALL_THIN / span, bore: k - 1 };
+  };
   // The floor's grade on from a kept point (a floor kept under the ground bends: fit.js).
   const gradeAt = (s) => (floorAt(s + 2) - floorAt(s)) / 2;
   let last = k0, lastDir = dirAt(k0), lastFloor = floorAt(p[k0 * TUBE_POINT + 2]), lastGrade = gradeAt(p[k0 * TUBE_POINT + 2]);
@@ -102,19 +114,28 @@ export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, f
     if (turned > TURN || bent || linesMoved || Math.abs(p[o + 3] - p[l + 3]) > SHIFT || Math.abs(p[o + 4] - p[l + 4]) > SHIFT || s - p[l + 2] >= KEEP_MOST) {
       // (A step from the sample before, a line coming or going there or the bore widening at once: that sample too, so
       // it stays a step, not drawn out back to the last point kept: 5.18l, a junction cavern's end wall (groups.js
-      // wallOf) became a slope up to KEEP_MOST long, across the branch's tube.)
-      if (k - 1 > last && stepAt(k)) keep.push(k - 1);
+      // wallOf) became a slope up to KEEP_MOST long, across the branch's tube. And where the width steps, the wall a
+      // plane at the wider sample: wallAt.)
+      if (stepAt(k)) {
+        if (k - 1 > last) keep.push(k - 1);
+        const wall = wallAt(k);
+        if (wall) keep.push(wall);
+      }
       keep.push(k); last = k; lastDir = d; lastFloor = floorAt(s); lastGrade = gradeAt(s);
     }
   }
   if (k1 > k0) keep.push(k1);
-  const mid = keep[Math.floor(keep.length / 2)] * TUBE_POINT;
+  const m0 = keep[Math.floor(keep.length / 2)], mid = (typeof m0 === 'number' ? m0 : m0.at) * TUBE_POINT;
   const origin = { lon: p[mid], lat: p[mid + 1], h: floorAt(p[mid + 2]) };
   origin.mx = mercX(origin.lon) * world;
   origin.my = mercY(origin.lat) * world;
   const out = new Float64Array(keep.length * POINT_DOUBLES);
-  keep.forEach((k, i) => {
-    const o = k * TUBE_POINT, w = i * POINT_DOUBLES, lon = p[o], lat = p[o + 1], s = p[o + 2];
+  keep.forEach((e, i) => {
+    // (A wall's point: where it is from its two samples, its bore and lines from one: wallAt.)
+    const wall = typeof e === 'object', k = wall ? e.bore : e;
+    const a = (wall ? e.at : e) * TUBE_POINT, b = (wall ? e.toward : e) * TUBE_POINT, f = wall ? e.f : 0;
+    const o = k * TUBE_POINT, w = i * POINT_DOUBLES;
+    const lon = p[a] + (p[b] - p[a]) * f, lat = p[a + 1] + (p[b + 1] - p[a + 1]) * f, s = p[a + 2] + (p[b + 2] - p[a + 2]) * f;
     out[w] = lon; out[w + 1] = lat; out[w + 2] = floorAt(s); out[w + 3] = s;
     out[w + 4] = mercX(lon) * world - origin.mx;
     out[w + 5] = mercY(lat) * world - origin.my;

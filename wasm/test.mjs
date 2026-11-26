@@ -2682,7 +2682,19 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (!(before <= 0.05 && at >= off - 0.1 && step <= 2.1)) problems.push(`the wall: ${before.toFixed(2)} → ${at.toFixed(2)} m over ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off)`);
   if (!(Math.abs(inside) <= 0.3)) problems.push(`the branch's end ${inside.toFixed(2)} m from the wall`);
   if (copyFrom !== wall) problems.push(`the cavern's track for the branch's line from sample ${copyFrom}, the wall at ${wall}`);
-  console.log(`junction caverns: a branch leaving at 5.2°, the bore's reach ${before.toFixed(2)} → ${at.toFixed(2)} m within ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off), its tube ending ${inside.toFixed(2)} m from the wall, the cavern's track for its line from the wall on — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  // (5.18m) As meshed (mesh.js meshPoints): the wall a plane at the wider sample, the bore's width stepping within 2 cm
+  // there (up to now over the samples' 2 m: a slope across the branch's tube, which starts at the wall, and its walls
+  // inside the slope left out, openings in them by the Ceneri base tunnel's north junction).
+  let meshStep = NaN, meshAt = NaN;
+  if (main) {
+    const { meshPoints } = await import('../js/engine/tunnels/mesh.js');
+    const mp = meshPoints(main, () => 500, 3.9, 20, 0, Infinity, 2.149);
+    for (let i = 1; i < mp.count && Number.isNaN(meshStep); i++) {
+      if (Math.abs(mp.points[i * 16 + 8] - mp.points[(i - 1) * 16 + 8]) > 0.5) { meshStep = mp.points[i * 16 + 3] - mp.points[(i - 1) * 16 + 3]; meshAt = mp.points[i * 16 + 3] - main.points[wall * TUBE_POINT + 2]; }
+    }
+  }
+  if (!(meshStep <= 0.05 && Math.abs(meshAt) <= 0.05)) problems.push(`the wall as meshed: its width steps over ${meshStep} m, ${meshAt} m from the wall's sample`);
+  console.log(`junction caverns: a branch leaving at 5.2°, the bore's reach ${before.toFixed(2)} → ${at.toFixed(2)} m within ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off; as meshed within ${(meshStep * 100).toFixed(0)} cm, at its sample), its tube ending ${inside.toFixed(2)} m from the wall, the cavern's track for its line from the wall on — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 
