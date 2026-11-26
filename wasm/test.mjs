@@ -2125,9 +2125,12 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (none.section) problems.push('a tube with 1 m of ground over it is built');
   const hill = fitOn(straight(1500, 'rail', 2), (x) => Math.max(-0.2, 0.5 * (Math.min(x, 1500 - x) - 3.25)), false);
   const h0 = hill.ends[0], crown = outlineAt(hill.section).crown;
-  // It starts where the hillside covers its vault (6.2 m), concrete (0.8) and soil (0.2): 17.65 m in, and half a metre.
-  if (h0.face !== 4 || h0.collar !== 0 || Math.abs(crown - 6.2) > 1e-9 || hill.collarWidth !== 0.8 || hill.floor.dipped > 1e-6 || Math.abs(h0.start - 18.15) > 0.01)
-    problems.push(`hillside portal ${JSON.stringify({ face: h0.face, collar: h0.collar, start: h0.start, crown, collarWidth: hill.collarWidth, dipped: hill.floor.dipped })}`);
+  // A long one starts at its portal as mapped (5.18m: no cutting dug out of its mouth), its concrete's outer side over
+  // its vault until the hillside covers that (6.2 m), its concrete (0.8) and soil (0.2): 17.65 m in, and half a metre.
+  // (The ground along it is read every few metres past the portal's first 12: the outer side ends at the first reading
+  // that covers it, 20 m.)
+  if (h0.face !== 4 || h0.collar !== 0 || Math.abs(crown - 6.2) > 1e-9 || hill.collarWidth !== 0.8 || hill.floor.dipped > 1e-6 || h0.start !== 0 || !(h0.shell >= 17.65 && h0.shell <= 22))
+    problems.push(`hillside portal ${JSON.stringify({ face: h0.face, collar: h0.collar, start: h0.start, shell: h0.shell, crown, collarWidth: hill.collarWidth, dipped: hill.floor.dipped })}`);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).

@@ -218,12 +218,19 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
   const fitted = floor ? profileOf(floor.ss, floor.zs) : floorAt;
   const ends = [0, 1].map((e) => (tube.ends[e].type === TUBE_END.PORTAL
     ? portalFit(tube, e, fitted, sec, slopes[e] ?? 0, collarWidth, pts, heights, spine) : null));
-  // Where each portal's tube starts: the ground over all of it (see the top), its concrete from there.
+  // Where the ground first covers each portal's tube (see the top): none left between two portals, no tube. (A tube
+  // with one portal here goes on beyond what is loaded.)
   const crownTop = (s) => outlineAt(sec, wideAt(ss, wides, s)).crown + collarWidth + OVER_SHELL;
+  const covered = [0, 1].map((e) => (ends[e] ? Math.min(coverStart(tube, e, fitted, crownTop, ss, gs, pts, heights), starts[e] ?? Infinity) : 0));
+  if (ends[0] && ends[1] && covered[0] + covered[1] > L - TUBE_LEAST) return null;
   for (const e of [0, 1]) {
     const f = ends[e];
     if (!f) continue;
-    f.start = Math.min(coverStart(tube, e, fitted, crownTop, ss, gs, pts, heights), starts[e] ?? Infinity);
+    // A short one (under a road: "nothing goes above the ground", 5.17f) from there, the road on in an open cutting
+    // short of it; a long one from its portal as mapped, its concrete showing where the slope is thin over it (5.18m,
+    // his words on 5.18l: "make it so that tunnels do not have that entrance default opening. basically just use the
+    // hole?": the cutting dug from its mouth out, walled and floored in concrete, by the Ceneri base tunnel 17 m).
+    f.start = Number.isFinite(cover) ? covered[e] : 0;
     f.shell = Math.max(SHELL_LEAST, f.shell - f.start);
     // The terrain's opening from the tube's mouth in (the cutting in front is the road's: vector/portals.js), at
     // least OPEN_LEAST past it.
@@ -231,8 +238,6 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
     o.from = f.start;
     o.depth = Math.min(L, Math.max(o.depth, f.start + OPEN_LEAST));
   }
-  // None left between two portals: no tube. (A tube with one portal here goes on beyond what is loaded.)
-  if (ends[0] && ends[1] && ends[0].start + ends[1].start > L - TUBE_LEAST) return null;
   // A short tube's concrete runs the whole way (where the ground over it dips under its roof, the roof shows, not
   // the tunnel through it from above); two collars' outer sides along a short tube end where they would meet.
   if (Number.isFinite(cover)) for (const f of ends) if (f) f.shell = L + f.collar;
