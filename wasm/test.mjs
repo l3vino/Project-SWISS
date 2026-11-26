@@ -2131,7 +2131,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   };
   const fitOn = (tube, ground, short = true, floorAt = () => 500) => {
     const kind = kinds.find((k) => k?.id === tube.kind), sec = sectionFor(tube, kind, null);
-    const pts = fitPoints(tube, short), heights = new Float64Array(pts.lonlat.length / 2);
+    const pts = fitPoints(tube, short, sec), heights = new Float64Array(pts.lonlat.length / 2);
     for (let i = 0; i < heights.length; i++) heights[i] = 500 + ground((pts.lonlat[2 * i] - 8.6) * M, (pts.lonlat[2 * i + 1] - 46.5) * 111132);
     return fitTube({ tube, floorAt, section: sec, clearance: clearanceFor(tube, kind), kind, short, pts, heights });
   };
@@ -2154,6 +2154,13 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   // that covers it, 20 m.)
   if (h0.face !== 4 || h0.collar !== 0 || Math.abs(crown - 6.2) > 1e-9 || hill.collarWidth !== 0.8 || hill.floor.dipped > 1e-6 || h0.start !== 0 || !(h0.shell >= 17.65 && h0.shell <= 22))
     problems.push(`hillside portal ${JSON.stringify({ face: h0.face, collar: h0.collar, start: h0.start, shell: h0.shell, crown, collarWidth: hill.collarWidth, dipped: hill.floor.dipped })}`);
+  // (5.18m) The same hillside falling away to the right of the bore, 3 m a metre (as by the Ceneri base tunnel's north
+  // portal): the outer side runs back until the ground covers the roof beside the middle too (fitPoints: 0.95 of its
+  // half-width out, its roof 4.62 m up there: from 28.75 m in, read every 4 m: 32 m); up to now only the middle was
+  // looked at, and past the outer side's end the bore's right side stood in the open and showed into the tube.
+  const falling = fitOn(straight(1500, 'rail', 2), (x, y) => Math.max(-0.2, 0.5 * (Math.min(x, 1500 - x) - 3.25)) + Math.min(0, 3 * y), false);
+  const f0 = falling.ends[0];
+  if (!(f0.shell >= 28.75 && f0.shell <= 36)) problems.push(`a hillside falling away to the right: the outer side ${f0.shell} m (on an even one ${h0.shell} m)`);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).
@@ -2194,7 +2201,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const hump = underGround({ ss: [0, 500, 1000], gs: [NaN, 2000, NaN], base: [500, 510, 500], crowns: [6, 6, 6], fixed: [true, true], grade: 0.04, cover: 1, length: 1000 });
   if (Math.abs(hump.zs[1] - 510) > 1e-9 || hump.dipped > 0) problems.push(`a culmination flattened: ${hump.zs[1]} m (510 expected)`);
   const fitLine = `fit: underpass a ${under.section?.height.toFixed(1)} m box from ${u0?.start} and ${u1?.start} m in (collar ${u0?.collar}), its concrete ${under.collarWidth?.toFixed(2)} m thick; ` +
-    `no room: ${none.section ? 'built' : 'not built'}; hillside face ${h0?.face} m in, the tube from ${h0?.start?.toFixed(2)} m in; 3 m of ground over a 60 m one: ${flat.section ? `a ${flat.section.height.toFixed(1)} m box` : 'not built'}, 2.7 m: ${low.section ? 'built' : 'not built'}, a path under 2.6 m: ${pathUnder.section ? `a ${pathUnder.section.height.toFixed(1)} m box` : 'not built'}; ` +
+    `no room: ${none.section ? 'built' : 'not built'}; hillside face ${h0?.face} m in, the tube from ${h0?.start?.toFixed(2)} m in, its outer side ${h0?.shell} m (the hill falling away to its right: ${f0?.shell} m); 3 m of ground over a 60 m one: ${flat.section ? `a ${flat.section.height.toFixed(1)} m box` : 'not built'}, 2.7 m: ${low.section ? 'built' : 'not built'}, a path under 2.6 m: ${pathUnder.section ? `a ${pathUnder.section.height.toFixed(1)} m box` : 'not built'}; ` +
     `under a valley the floor dips ${dip.floor.dipped.toFixed(1)} m (vault ≥ ${worstCover.toFixed(2)} m under the ground, ≤ ${(worstGrade * 100).toFixed(2)}%); ` +
     `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down`;
   console.log(`tunnels: stand-in ${rail.length} railway tube, ${t0?.tracks} tracks, ${t0?.length.toFixed(0)} m, ends ${t0?.ends.map((e) => e.type).join('/')}; ` +
@@ -2462,7 +2469,34 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const boxStart = boxFound[0]?.start;
   const trimLine = `a box under a street at a slant starts ${boxStart === undefined ? 'where it did (3 m in)' : `${boxStart.toFixed(1)} m in`} (${boxTube.trimSeen?.[0]})`;
   if (boxStart === undefined || boxStart > 0.05) problems.push(trimLine);
-  console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  // (5.18m) A portal's first piece runs a metre in the way the mesh's first ring faces (its line's first stretch), so
+  // the terrain's bore ends on the portal's own plane, where the bore's middle drifts right going in (3.05 to 3.76 m
+  // over 38 m, as by the Ceneri base tunnel's north portal); up to now the first piece ran on along the drifting
+  // middle, turned against the portal (0.17 m inside the mouth at its left wall there: the ground's step stood in it).
+  let endLine = '';
+  {
+    const n = 51, p = new Float64Array(n * POINT_DOUBLES);
+    for (let k = 0; k < n; k++) {
+      const s = 2 * k, o = k * POINT_DOUBLES;
+      p[o] = LON; p[o + 1] = LAT + s / my; p[o + 2] = 500; p[o + 3] = s; p[o + 7] = 3.05 + 0.0187 * Math.min(s, 38); p[o + 8] = 3.28;
+    }
+    const c = boreCut({ points: p, count: n }, sec, [{ type: P, dirX: 0, dirY: -1, collar: 0, rise: 0 }, { type: P, dirX: 0, dirY: 1, collar: 0, rise: 0 }]);
+    const ends = [];
+    for (const [i, j] of [[0, 1], [c.count - 1, c.count - 2]]) {
+      let a = i, b = j;
+      const step = j > i ? 1 : -1;
+      while (c.flags[a] & 2) { a += step; b += step; }
+      const pa = c.points.subarray(a * 9, a * 9 + 3), pb = c.points.subarray(b * 9, b * 9 + 3);
+      const e = new Float64Array(3), nn = new Float64Array(3), u = new Float64Array(3);
+      enuBasis(LON, LAT, e, nn, u);
+      const d = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
+      const east = d[0] * e[0] + d[1] * e[1] + d[2] * e[2], north = d[0] * nn[0] + d[1] * nn[1] + d[2] * nn[2];
+      ends.push({ turned: Math.abs(Math.atan2(east, Math.abs(north))) * 180 / Math.PI, long: Math.hypot(east, north) });
+    }
+    endLine = `a portal's first piece ${ends.map((q) => `${q.long.toFixed(2)} m, turned ${q.turned.toFixed(3)}°`).join(' / ')} against its plane (12.8 m out ${(12.8 * Math.tan(Math.max(...ends.map((q) => q.turned)) * Math.PI / 180) * 100).toFixed(1)} cm)`;
+    if (!ends.every((q) => q.turned < 0.01 && Math.abs(q.long - 1) < 0.01)) problems.push(endLine);
+  }
+  console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine}; ${endLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 

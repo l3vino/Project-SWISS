@@ -49,6 +49,7 @@
 
 import { TUBE_END, TUBE_POINT } from './groups.js';
 import { outlineAt, fitUnder, leastBox } from './sections.js';
+import { boreWide } from './mesh.js';
 
 /* Whole tunnels at most this long must fit under the ground over them; longer ones run through mountains. */
 export const SHORT = 300;
@@ -59,6 +60,10 @@ const AXIS_OUT = 12, AXIS_IN = 12;
  * long tube's middle need not load hundreds of the finest). */
 const ALONG_NEAR = 4, ALONG_FAR = 8, NEAR_PORTAL = 120;
 export const FAR_LEVEL = 15;
+/* Beside the bore near each portal (5.18m): every ALONG_NEAR metres up to SIDE_IN in, at SIDES of its half-width
+ * either side of its middle, where its roof is lower than over its middle (its shell runs back until the ground covers
+ * it there too: portalFit). */
+const SIDE_IN = 80, SIDES = [-0.95, -0.55, 0.55, 0.95];
 /* The face: where the ground first rises FACE_LEVEL over the floor and stays so FACE_RUN metres on; looked for up to
  * FACE_FARTHEST in. */
 const FACE_LEVEL = 0.3, FACE_RUN = 3, FACE_FARTHEST = 10;
@@ -95,15 +100,19 @@ const PATHS = new Set(['path', 'footway', 'steps', 'track', 'trail', 'via_ferrat
 
 /**
  * Where the ground is wanted for a tube's fit: along each portal's axis (from AXIS_OUT out to AXIS_IN in, a metre
- * apart, through the bore's middle) and along the whole tube (the bore's middle: each point of a short one, else
- * every ALONG_NEAR metres near a portal and ALONG_FAR beyond, with its ends).
- * @param tube   the near tube (groups.js)
- * @param short  whether its whole tunnel is short (it must fit under the ground)
+ * apart, through the bore's middle), along the whole tube (the bore's middle: each point of a short one, else
+ * every ALONG_NEAR metres near a portal and ALONG_FAR beyond, with its ends), and beside the bore near each portal
+ * (with its section: SIDES of its half-width either side, every ALONG_NEAR metres up to SIDE_IN in).
+ * @param tube     the near tube (groups.js)
+ * @param short    whether its whole tunnel is short (it must fit under the ground)
+ * @param section  its cross-section (sections.js), or null: nothing beside it
  * @returns { lonlat: Float64Array [lon, lat, …], axes: [each end's first sample along its axis; -1 none], first (the
- *            tube points' first sample), ks: Int32Array (the tube point of each of those), under: per sample the
- *            level its ground tile is under (Infinity: the finest) }
+ *            tube points' first sample), ks: Int32Array (the tube point of each of those), sides: per end null or
+ *            { at (its first sample), ds (metres in of each place, SIDES.length samples a place), ks (the tube point of
+ *            each place), xs (metres right of the middle of each sample) }, under: per sample the level its ground
+ *            tile is under (Infinity: the finest) }
  */
-export function fitPoints(tube, short = false) {
+export function fitPoints(tube, short = false, section = null) {
   const p = tube.points, n = p.length / TUBE_POINT, L = tube.length;
   const out = [], axes = [-1, -1], under = [];
   for (let e = 0; e < 2; e++) {
@@ -130,7 +139,28 @@ export function fitPoints(tube, short = false) {
     under.push(near || short ? Infinity : FAR_LEVEL + 1);
     ks.push(k);
   }
-  return { lonlat: Float64Array.from(out), axes, first, ks: Int32Array.from(ks), under };
+  const sides = [0, 1].map((e) => {
+    if (!section || tube.ends[e].type !== TUBE_END.PORTAL) return null;
+    const at = out.length / 2, ds = [], ks = [], xs = [];
+    let last = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const k = e ? n - 1 - i : i, d = e ? L - p[k * TUBE_POINT + 2] : p[k * TUBE_POINT + 2];
+      if (d > SIDE_IN) break;
+      if (d - last < ALONG_NEAR - 1e-6) continue;
+      last = d;
+      const reach = sideOf(outlineAt(section, wideOf(section, p[k * TUBE_POINT + 4])));
+      for (const f of SIDES) {
+        const q = besideOf(p, n, k, f * reach);
+        out.push(q[0], q[1]);
+        under.push(Infinity);
+        xs.push(f * reach);
+      }
+      ds.push(d);
+      ks.push(k);
+    }
+    return { at, ds, ks, xs };
+  });
+  return { lonlat: Float64Array.from(out), axes, first, ks: Int32Array.from(ks), sides, under };
 }
 
 /**
@@ -164,7 +194,7 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
       const o = pts.ks[i] * TUBE_POINT;
       ss.push(p[o + 2]);
       gs.push(heights[pts.first + i]);
-      wides.push((section.half + p[o + 4]) / section.half);
+      wides.push(wideOf(section, p[o + 4]));
     }
   }
   let cover = NaN, sec = section, lower = null;
@@ -412,7 +442,7 @@ export function profileOf(ss, zs) {
 function portalFit(tube, e, floorAt, sec, slope, collarWidth, pts, heights, spine) {
   const p = tube.points, n = p.length / TUBE_POINT, L = tube.length, o = e ? (n - 1) * TUBE_POINT : 0;
   const way = wayIn(tube, e);
-  const outline = outlineAt(sec, (sec.half + p[o + 4]) / sec.half);
+  const outline = outlineAt(sec, wideOf(sec, p[o + 4]));
   const crown = outline.crown;
   // The terrain's opening (passes/terrain.js): from the mapped portal until its tube's start is known (fitTube).
   const early = { from: 0, depth: Math.min(L, 20), bend: 0, rise: slope, offset: way.offset, outline, slack: 0 };
@@ -457,12 +487,37 @@ function portalFit(tube, e, floorAt, sec, slope, collarWidth, pts, heights, spin
     }
     return Infinity;
   };
+  // Beside the bore too (5.18m), at SIDES of its half-width (fitPoints): from the first place where the ground covers
+  // its roof at each of them, its concrete and OVER_SHELL of soil, and keeps covering it OVER_RUN on (a sample not
+  // known counts as covered); nowhere within SIDE_IN, the last place. (At the Ceneri base tunnel's north portal, three
+  // tracks in one bore 25 m wide on a slope across it, the ground stood 9 m over the floor over its middle but 1–3 m
+  // over its right side for the first 12 m, its vault 4–6 m up there: its shell ran back 3 m, and past that its open
+  // side showed into it.)
+  const side = pts.sides?.[e], K = SIDES.length;
+  let beside = 0;
+  if (side?.ds.length) {
+    const ok = side.ds.map((d, i) => {
+      const k = side.ks[i], w = outlineAt(sec, wideOf(sec, p[k * TUBE_POINT + 4])), floor = floorAt(sAt(d));
+      for (let j = 0; j < K; j++) {
+        const g = heights[side.at + i * K + j];
+        if (Number.isFinite(g) && g - floor < roofAt(w, side.xs[i * K + j]) + collarWidth + OVER_SHELL - 1e-6) return false;
+      }
+      return true;
+    });
+    beside = side.ds[side.ds.length - 1];
+    for (let i = 0; i < ok.length; i++) {
+      if (!ok[i]) continue;
+      let keeps = true;
+      for (let j = i + 1; j < ok.length && side.ds[j] <= side.ds[i] + OVER_RUN; j++) if (!ok[j]) { keeps = false; break; }
+      if (keeps) { beside = side.ds[i]; break; }
+    }
+  }
   // The collar's outer side: until the ground is over it (no farther than the ground is known).
-  const shell = Math.max(Math.min(SHELL_LEAST, L), Math.min(stays(crown + collarWidth + OVER_SHELL), L, ds[ds.length - 1]));
+  const shell = Math.max(Math.min(SHELL_LEAST, L), Math.min(Math.max(stays(crown + collarWidth + OVER_SHELL), beside), L, ds[ds.length - 1]));
 
   // The terrain's opening: as deep as the ground takes to cover the vault, curved as the bore runs on in.
   let depth = Math.min(Math.max(stays(crown + OVER_VAULT) + OPEN_PAST, OPEN_LEAST), OPEN_MOST, L);
-  const curve = spine ? curveIn(tube, e, spine, way, Math.min(L, OPEN_MOST), sec.half) : [];
+  const curve = spine ? curveIn(tube, e, spine, way, Math.min(L, OPEN_MOST), sec) : [];
   let bend = 0;
   for (let round = 0; round < 4; round++) {
     let sw = 0, sx = 0;
@@ -473,16 +528,16 @@ function portalFit(tube, e, floorAt, sec, slope, collarWidth, pts, heights, spin
     depth = Math.max(face, off[0] - 0.5);
   }
   // Where the bore narrows within it, the opening is as narrow (no ground left out beside the tube).
-  let wide = (sec.half + p[o + 4]) / sec.half, slack = 0;
+  let wide = wideOf(sec, p[o + 4]), slack = 0;
   for (const [d, lat, w] of curve) if (d <= depth) { wide = Math.min(wide, w); slack = Math.max(slack, Math.abs(lat - 0.5 * bend * d * d)); }
   const opening = { from: 0, depth, bend, slack, rise: slope, offset: way.offset, outline: outlineAt(sec, wide) };
   return { face, collar: 0, shell, rise: slope, offset: way.offset, outline, opening };
 }
 
 /* The bore's middle along the spine from an end, against the straight way in: [d (metres in), metres right of the
- * way in beyond the end's own, how many times one line's section (`half` either side) the bore is wide there], out
- * to `most` metres in. (5.17d's.) */
-function curveIn(tube, e, spine, way, most, half) {
+ * way in beyond the end's own, how many times one line's section the bore is wide there (wideOf)], out to `most`
+ * metres in. (5.17d's.) */
+function curveIn(tube, e, spine, way, most, sec) {
   const p = tube.points, n = p.length / TUBE_POINT, L = tube.length, end = tube.ends[e];
   const m = metresLon(end.lat), out = [];
   for (let i = 0; i < n; i++) {
@@ -492,9 +547,35 @@ function curveIn(tube, e, spine, way, most, half) {
     const x = (lon - end.lon) * m, y = (lat - end.lat) * M_LAT;
     const d = x * way.inX + y * way.inY;
     if (d <= 0) continue;
-    out.push([d, x * way.rX + y * way.rY - way.offset, (half + p[o + 4]) / half]);
+    out.push([d, x * way.rX + y * way.rY - way.offset, wideOf(sec, p[o + 4])]);
   }
   return out;
+}
+
+/* How many times one line's section the bore is wide where its lines spread `spread` metres either side of its middle:
+ * as its mesh is (mesh.js boreWide: as its walls and its floor need; 5.18m: up to then the fit took a round tube only
+ * as wide as its walls need, the Ceneri base tunnel's at its north portal 2.42 lines where its mesh is 3.28). */
+function wideOf(sec, spread) {
+  return boreWide(sec.half, spread, sec.low?.half ?? 0);
+}
+
+/** An outline's (sections.js outlineAt) half-width at its widest (a bored tube's circle, else its walls), and the
+ *  height of its roof over the floor `x` metres from its middle. */
+export function sideOf(o) {
+  return o.lowR > 0 ? o.archA : o.half;
+}
+function roofAt(o, x) {
+  if (!(o.archA > 0)) return o.top;
+  const u = Math.min(1, Math.abs(x) / o.archA);
+  return Math.max(o.top, o.archY + o.archH * Math.sqrt(1 - u * u));
+}
+
+/* The point `x` metres right of the bore's middle at point k of a tube (as the line runs there). */
+function besideOf(p, n, k, x) {
+  const a = Math.max(0, k - 1) * TUBE_POINT, b = Math.min(n - 1, k + 1) * TUBE_POINT, o = k * TUBE_POINT;
+  const m = metresLon(p[o + 1]);
+  const dx = (p[b] - p[a]) * m, dy = (p[b + 1] - p[a + 1]) * M_LAT, l = Math.hypot(dx, dy) || 1, off = p[o + 3] + x;
+  return [p[o] + (off * dy) / l / m, p[o + 1] - (off * dx) / l / M_LAT];
 }
 
 /* The way in at an end (east, north), right of it, and the bore's middle there right of the line (as the way in runs). */

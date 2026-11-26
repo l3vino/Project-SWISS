@@ -53,8 +53,14 @@ export const CUT_SLOT_FLOATS = Math.ceil((CUT_HEADER + CUT_MOST * CUT_FLOATS) / 
 const CUT_REACH = 0.5;
 /* Metres of ground over the vault from which on nothing reaches into the bore. */
 const DEEP = 30;
-/* Point flags: deep under the ground; beyond a portal (the collar and CUT_PAST out of it). */
-const FLAG_DEEP = 1, FLAG_BEYOND = 2;
+/* Point flags: deep under the ground; beyond a portal (the collar and CUT_PAST out of it); the end of a portal's first
+ * piece, kept (thin). */
+const FLAG_DEEP = 1, FLAG_BEYOND = 2, FLAG_END = 4;
+/* Metres a portal's first piece runs in, the way the mesh's first ring there faces (along its line's first stretch,
+ * tunnel.c): the terrain's bore ends on the portal's own plane (5.18m: the first piece ran 14 m in along the bore's
+ * middle, which drifts right there, turned 0.78° against it; at the Ceneri base tunnel's north portal the cut began
+ * 0.17 m inside the mouth at its left wall, where the ground steps up 3.4 m, and that sliver of the step stood in it). */
+const END_PIECE = 1;
 
 const M_LAT = 111132;
 const metresLon = (lat) => 111320 * Math.cos((lat * Math.PI) / 180);
@@ -83,11 +89,25 @@ export function boreCut(mp, sec, ends, coverAt = null) {
     const o = k * POINT_DOUBLES, [lon, lat] = middle(k), d = Math.max(0, end.collar ?? 0) + CUT_PAST;
     put(lon + (end.dirX * d) / metresLon(lat), lat + (end.dirY * d) / M_LAT, p[o + 2] + (end.rise ?? 0) * d, p[o + 8], FLAG_BEYOND);
   };
+  // A portal's first piece: END_PIECE in from its middle along its line's first stretch, its floor and width as the
+  // mesh has them there.
+  const inward = (k, j, end) => {
+    if (end?.type !== MESH_END.PORTAL || n < 2) return;
+    const o = k * POINT_DOUBLES, q = j * POINT_DOUBLES, m = metresLon(p[o + 1]);
+    const dx = (p[q] - p[o]) * m, dy = (p[q + 1] - p[o + 1]) * M_LAT, l = Math.hypot(dx, dy);
+    const d = Math.min(END_PIECE, l / 2);
+    if (!(d > 0.1)) return;
+    const [lon, lat] = middle(k), f = d / l;
+    put(lon + (dx * f) / m, lat + (dy * f) / M_LAT, p[o + 2] + (p[q + 2] - p[o + 2]) * f, p[o + 8] + (p[q + 8] - p[o + 8]) * f, FLAG_END);
+  };
+  const covered = (k) => (coverAt ? coverAt(p[k * POINT_DOUBLES + 3]) : NaN);
   beyond(0, ends[0]);
   for (let k = 0; k < n; k++) {
     const [lon, lat] = middle(k), o = k * POINT_DOUBLES;
-    const cover = coverAt ? coverAt(p[o + 3]) : NaN;
-    put(lon, lat, p[o + 2], p[o + 8], cover > DEEP ? FLAG_DEEP : 0);
+    // (The last portal's first piece before its own point.)
+    if (k === n - 1 && k > 0) inward(k, k - 1, ends[1]);
+    put(lon, lat, p[o + 2], p[o + 8], covered(k) > DEEP ? FLAG_DEEP : 0);
+    if (k === 0) inward(0, 1, ends[0]);
   }
   beyond(n - 1, ends[1]);
   const thinned = thin(out, flags);

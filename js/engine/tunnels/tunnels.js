@@ -50,7 +50,7 @@ import { TUBE_END, TUBE_POINT, LINE_FLOATS, LINE_MOST } from './groups.js';
 import { placeOn } from './trace.js';
 import { sectionFor, tableEntry, floorProfile, clearanceFor, outlineAt, wallRound, lookFor, vaultUp, LOOK, MATERIAL } from './sections.js';
 import { meshPoints, spineOf, middleAt, boreWide, MESH_END, POINT_DOUBLES, HEAD_N, CUT_FOOT } from './mesh.js';
-import { fitPoints, fitTube, SHORT, COLLAR_WIDTH } from './fit.js';
+import { fitPoints, fitTube, sideOf, SHORT, COLLAR_WIDTH } from './fit.js';
 import { boreCut, addAprons, boreMeets } from './cuts.js';
 import { placedCopy, wingOff, WING_SPLAY, WING_LEN } from './placed.js';
 import { railFloors, stationFloor, gradeLimit, steepest } from './junctions.js';
@@ -470,8 +470,9 @@ export class TunnelSet {
       return g.slope ?? 0;
     });
     r.rule ??= sectionFor(near, r.kind, r.entry, whole.length);
-    // The ground along the whole of it and round its portals (a long tube's middle from coarser tiles: fit.js).
-    const fg = this.#groundFor(`f|${near.key}|${short ? 1 : 0}`, () => fitPoints(near, short));
+    // The ground along the whole of it, round its portals and beside it there (a long tube's middle from coarser
+    // tiles: fit.js).
+    const fg = this.#groundFor(`f|${near.key}|${short ? 1 : 0}`, () => fitPoints(near, short, r.rule));
     if (fg.state === 'tiles') waiting = true;
     if (waiting) return;
     // 3. The floor by its portals.
@@ -1231,7 +1232,9 @@ export class TunnelSet {
         const floor = r.floorAt(s), grade = (r.floorAt(s + inward * 10) - floor) / 10;
         // The terrain's opening (fit.js `opening`, passes/terrain.js: 5.17d's portal openings), from where the tube
         // starts in (its `before`: metres out of the portal it begins, negative inside).
-        const q = f.opening, w = q.outline, mouth = f.outline.half + Math.abs(f.offset);
+        // (Its mouth as wide as the bore at its widest: a round tube's circle, wider than its floor between the
+        // walkways, 5.18m.)
+        const q = f.opening, w = q.outline, mouth = sideOf(f.outline) + Math.abs(f.offset);
         const reachOpen = q.depth + w.half + Math.abs(q.offset) + 0.5 * Math.abs(q.bend) * q.depth * q.depth + 2;
         this.portals.push({
           lon: end.lon, lat: end.lat, h: floor,
