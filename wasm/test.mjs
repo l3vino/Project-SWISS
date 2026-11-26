@@ -2479,7 +2479,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   // the terrain's bore ends on the portal's own plane, where the bore's middle drifts right going in (3.05 to 3.76 m
   // over 38 m, as by the Ceneri base tunnel's north portal); up to now the first piece ran on along the drifting
   // middle, turned against the portal (0.17 m inside the mouth at its left wall there: the ground's step stood in it).
-  let endLine = '';
+  let endLine = '', faceLine = '';
   {
     const n = 51, p = new Float64Array(n * POINT_DOUBLES);
     for (let k = 0; k < n; k++) {
@@ -2502,7 +2502,32 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     endLine = `a portal's first piece ${ends.map((q) => `${q.long.toFixed(2)} m, turned ${q.turned.toFixed(3)}°`).join(' / ')} against its plane (12.8 m out ${(12.8 * Math.tan(Math.max(...ends.map((q) => q.turned)) * Math.PI / 180) * 100).toFixed(1)} cm)`;
     if (!ends.every((q) => q.turned < 0.01 && Math.abs(q.long - 1) < 0.01)) problems.push(endLine);
   }
-  console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine}; ${endLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  // (5.18m) An end opening into another along that one (tunnels.js #joinFacing), here 5° off its own line: the mesh's
+  // last 5 cm face that way (mesh.js meshPoints `facing`: its end ring and cap with them), and its room runs on 5 cm
+  // past it that way, its last piece kept facing so (cuts.js JOIN_PAST): its end lies in the cavern wall it ends on,
+  // and the wall's cut reaches over it (the Ceneri viaduct track's tube met the junction cavern's end wall 3.8° turned).
+  {
+    const { meshPoints } = await import('../js/engine/tunnels/mesh.js');
+    const n = 51, tp = new Float64Array(n * 5);
+    for (let k = 0; k < n; k++) { tp[k * 5] = LON; tp[k * 5 + 1] = LAT + (2 * k) / my; tp[k * 5 + 2] = 2 * k; }
+    const a5 = (5 * Math.PI) / 180, face = [Math.sin(a5), Math.cos(a5)];
+    const mp = meshPoints({ points: tp, length: 100, family: 2 }, () => 500, 4, 20, 0, Infinity, 0, [null, face]);
+    const at = (i) => [(mp.points[i * POINT_DOUBLES] - LON) * mx, (mp.points[i * POINT_DOUBLES + 1] - LAT) * my];
+    const [ax, ay] = at(mp.count - 2), [bx, by] = at(mp.count - 1);
+    const meshWay = Math.atan2(bx - ax, by - ay) * 180 / Math.PI, meshStep = mp.points[(mp.count - 1) * POINT_DOUBLES + 3] - mp.points[(mp.count - 2) * POINT_DOUBLES + 3];
+    const c = boreCut(mp, sec, [{ type: P, dirX: 0, dirY: -1, collar: 0, rise: 0 }, { type: J, dirX: face[0], dirY: face[1], collar: 0, rise: 0 }]);
+    const e3 = new Float64Array(3), n3 = new Float64Array(3), u3 = new Float64Array(3);
+    enuBasis(LON, LAT, e3, n3, u3);
+    const en = (d) => [d[0] * e3[0] + d[1] * e3[1] + d[2] * e3[2], d[0] * n3[0] + d[1] * n3[1] + d[2] * n3[2]];
+    const endE = geodeticToEcef(mp.points[(mp.count - 1) * POINT_DOUBLES], mp.points[(mp.count - 1) * POINT_DOUBLES + 1], 500);
+    const q1 = (c.count - 1) * 9, q0 = (c.count - 2) * 9;
+    const [px, py] = en([c.points[q1] - endE[0], c.points[q1 + 1] - endE[1], c.points[q1 + 2] - endE[2]]);
+    const [lx, ly] = en([c.points[q1] - c.points[q0], c.points[q1 + 1] - c.points[q0 + 1], c.points[q1 + 2] - c.points[q0 + 2]]);
+    const pastWay = Math.atan2(px, py) * 180 / Math.PI, pieceWay = Math.atan2(lx, ly) * 180 / Math.PI, pastLong = Math.hypot(px, py);
+    faceLine = `an end opening into another 5° off its line: its last ${(meshStep * 100).toFixed(0)} cm face ${meshWay.toFixed(2)}°, its room on ${(pastLong * 100).toFixed(1)} cm past it at ${pastWay.toFixed(2)}° (its last piece ${pieceWay.toFixed(2)}°)`;
+    if (!(Math.abs(meshWay - 5) < 0.05 && Math.abs(meshStep - 0.05) < 1e-6 && Math.abs(pastLong - 0.05) < 0.002 && Math.abs(pastWay - 5) < 0.2 && Math.abs(pieceWay - 5) < 0.2)) problems.push(faceLine);
+  }
+  console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine}; ${endLine}; ${faceLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 

@@ -29,6 +29,11 @@ const KEEP_MOST = 40;      // metres
  * over the samples' spacing (2 m) across the branch's tube that starts there (its walls inside the slope were left
  * out, tunnel.wgsl fsMeet: openings in them, the sky through their tops, by the Ceneri base tunnel's north junction). */
 const WALL_THIN = 0.02;
+/* Metres an end opening into another tube runs along the way that one runs there (meshPoints `facing`, 5.18m): its end,
+ * its cap past it and its room's end lie in that one's cavern wall, not turned across it (the Ceneri viaduct track's
+ * tube met the junction cavern's end wall 3.8° turned: the wall stood 0.26 m past its end at one side, a slab across the
+ * way in, and a wedge open between the two at the other). */
+export const FACE_STEP = 0.05;
 /* Metres a track's middle stays in from the edge of the floor (tunnel.c TRACK_EDGE: half a sleeper and some). */
 const TRACK_EDGE = 1.5;
 const EQUATOR = 2 * Math.PI * 6378137;
@@ -43,9 +48,11 @@ const EQUATOR = 2 * Math.PI * 6378137;
  * @param floorHalf  the section's half-width at its floor (sections.js low.half), metres: where it is narrower than
  *                 the section (a bored tube's round floor), the bore stretched for lines beside it is made as wide as
  *                 its floor needs to hold their outermost tracks (0: as the walls need only)
+ * @param facing   per end null or [east, north]: the way (as this tube runs) its last FACE_STEP there faces (tunnels.js
+ *                 #joinFacing: an end opening into another, along that one)
  * @returns { points: Float64Array (POINT_DOUBLES each), count, origin: { lon, lat, h, mx, my } }
  */
-export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, floorHalf = 0) {
+export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, floorHalf = 0, facing = null) {
   const p = smoothed(tube.points, half), n = p.length / TUBE_POINT, world = worldPixels(zoom);
   const dirAt = (k) => {
     const a = Math.max(0, k - 1) * TUBE_POINT, b = Math.min(n - 1, k + 1) * TUBE_POINT;
@@ -125,17 +132,33 @@ export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, f
     }
   }
   if (k1 > k0) keep.push(k1);
+  // An end's last FACE_STEP along `facing`: a point that far in from it that way, with its bore and lines (tunnel.c: a
+  // ring faces along the stretch from it), so the end ring, its cap past it and its room's end (cuts.js) face there.
+  const sOf = (e) => (typeof e === 'number' ? p[e * TUBE_POINT + 2] : e.shift ? p[e.at * TUBE_POINT + 2] + e.ds
+    : p[e.at * TUBE_POINT + 2] + (p[e.toward * TUBE_POINT + 2] - p[e.at * TUBE_POINT + 2]) * e.f);
+  for (const end of [0, 1]) {
+    const f = facing?.[end], k = end ? keep[keep.length - 1] : keep[0], next = end ? keep[keep.length - 2] : keep[1];
+    if (!f || typeof k !== 'number' || next === undefined || !(Math.abs(sOf(next) - p[k * TUBE_POINT + 2]) > 2 * FACE_STEP)) continue;
+    const step = end ? -FACE_STEP : FACE_STEP;
+    keep.splice(end ? keep.length - 1 : 1, 0, { at: k, shift: [f[0] * step, f[1] * step], ds: step, bore: k });
+  }
   const m0 = keep[Math.floor(keep.length / 2)], mid = (typeof m0 === 'number' ? m0 : m0.at) * TUBE_POINT;
   const origin = { lon: p[mid], lat: p[mid + 1], h: floorAt(p[mid + 2]) };
   origin.mx = mercX(origin.lon) * world;
   origin.my = mercY(origin.lat) * world;
   const out = new Float64Array(keep.length * POINT_DOUBLES);
   keep.forEach((e, i) => {
-    // (A wall's point: where it is from its two samples, its bore and lines from one: wallAt.)
-    const wall = typeof e === 'object', k = wall ? e.bore : e;
-    const a = (wall ? e.at : e) * TUBE_POINT, b = (wall ? e.toward : e) * TUBE_POINT, f = wall ? e.f : 0;
-    const o = k * TUBE_POINT, w = i * POINT_DOUBLES;
-    const lon = p[a] + (p[b] - p[a]) * f, lat = p[a + 1] + (p[b + 1] - p[a + 1]) * f, s = p[a + 2] + (p[b + 2] - p[a + 2]) * f;
+    // (A wall's point: where it is from its two samples, its bore and lines from one: wallAt. An end's facing point:
+    // shifted from it, metres east and north.)
+    const made = typeof e === 'object', k = made ? e.bore : e, o = k * TUBE_POINT, w = i * POINT_DOUBLES;
+    let lon, lat, s;
+    if (made && e.shift) {
+      const a = e.at * TUBE_POINT;
+      lon = p[a] + e.shift[0] / (111320 * Math.cos((p[a + 1] * Math.PI) / 180)); lat = p[a + 1] + e.shift[1] / 111132; s = sOf(e);
+    } else {
+      const a = (made ? e.at : e) * TUBE_POINT, b = (made ? e.toward : e) * TUBE_POINT, f = made ? e.f : 0;
+      lon = p[a] + (p[b] - p[a]) * f; lat = p[a + 1] + (p[b + 1] - p[a + 1]) * f; s = p[a + 2] + (p[b + 2] - p[a + 2]) * f;
+    }
     out[w] = lon; out[w + 1] = lat; out[w + 2] = floorAt(s); out[w + 3] = s;
     out[w + 4] = mercX(lon) * world - origin.mx;
     out[w + 5] = mercY(lat) * world - origin.my;

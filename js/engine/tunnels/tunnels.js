@@ -119,6 +119,10 @@ const JOIN_NEAR = 1, JOIN_EASE = 40;
 /* Metres from a JOIN end within which a tube's line crossing another of its family's is where it opens into that one,
  * not a crossing (#crossings, 5.18h). */
 const JOIN_CROSS = 60;
+/* Radians at most a JOIN end's own way may lie off the way of the tube it opens into for its end to face along that one
+ * (#joinFacing, 5.18m: a branch leaving a junction cavern's end wall 3–6° off; one opening in from the side keeps its
+ * own). */
+const FACE_MOST = 0.44;
 /* Metres a near tube's JOIN end and its whole tunnel's may lie apart and be the same (5.17t: by Giubiasco 23 m), and
  * its portal and a whole tunnel's end that is not one (at Vezia 74 m). */
 const JOIN_MATCH = 60, PORTAL_MATCH = 100;
@@ -666,6 +670,19 @@ export class TunnelSet {
     return out;
   }
 
+  /* The way (as tube r runs) its end e faces where it opens into another (mesh.js meshPoints `facing`, 5.18m): along
+   * that one there, as it runs or against it, whichever is nearer its own way; null where it opens in from the side
+   * (more than FACE_MOST off that one's way) or into one not placed. */
+  #joinFacing(r, e) {
+    const end = r.tube.ends[e], j = r.joins?.get(e), q = j ? this.records.get(j.key) : null;
+    if (end.type !== TUBE_END.JOIN || !q) return null;
+    const at = placeOn(q.tube, end.lon, end.lat);
+    // Its own way there: out of it at its second end, into it at its first.
+    const wx = e ? end.dirX : -end.dirX, wy = e ? end.dirY : -end.dirY, along = at.dirX * wx + at.dirY * wy;
+    if (!(Math.abs(along) >= Math.cos(FACE_MOST))) return null;
+    return along < 0 ? [-at.dirX, -at.dirY] : [at.dirX, at.dirY];
+  }
+
   /* The railway portal nearest a portal end, within PORTAL_TWIN metres, that a track runs out of (#approachOf), or
    * null (5.18g). */
   #twinPortal(end) {
@@ -1047,7 +1064,9 @@ export class TunnelSet {
       // 5.17e started it at the portal as mapped, its roof and concrete out of the ground for its first metres).
       const f = r.fit.ends;
       const from = f[0]?.start ?? 0, to = near.length - (f[1]?.start ?? 0);
-      const mp = meshPoints(near, r.floorAt, sec.half, zoom, from, to, sec.low?.half ?? 0);
+      // (An end opening into another along that one: #joinFacing.)
+      const facing = [this.#joinFacing(r, 0), this.#joinFacing(r, 1)];
+      const mp = meshPoints(near, r.floorAt, sec.half, zoom, from, to, sec.low?.half ?? 0, facing);
       const o = mp.origin, origin = geodeticToEcef(o.lon, o.lat, o.h);
       const ends = near.ends.map(meshEnd);
       // No wing walls (5.17d): the road's own cut holds the slope beside the approach (shape.c, pinned at the portal).

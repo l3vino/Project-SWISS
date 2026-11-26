@@ -61,6 +61,11 @@ const FLAG_DEEP = 1, FLAG_BEYOND = 2, FLAG_END = 4;
  * middle, which drifts right there, turned 0.78° against it; at the Ceneri base tunnel's north portal the cut began
  * 0.17 m inside the mouth at its left wall, where the ground steps up 3.4 m, and that sliver of the step stood in it). */
 const END_PIECE = 1;
+/* Metres a JOIN end's room runs on past it, along its last stretch (5.18m): to where its cap stands (tunnel.c
+ * JOIN_CAP_OUT), over the 2 cm of the junction cavern's end wall it ends on (mesh.js WALL_THIN), which is left out of
+ * the wall inside its room; its end and that last stretch kept as they are (thin: FLAG_END), facing as the mesh's end
+ * does (mesh.js FACE_STEP). Ending exactly at its end, the room let the wall stand a hair past it in spots. */
+const JOIN_PAST = 0.05;
 
 const M_LAT = 111132;
 const metresLon = (lat) => 111320 * Math.cos((lat * Math.PI) / 180);
@@ -101,15 +106,27 @@ export function boreCut(mp, sec, ends, coverAt = null) {
     put(lon + (dx * f) / m, lat + (dy * f) / M_LAT, p[o + 2] + (p[q + 2] - p[o + 2]) * f, p[o + 8] + (p[q + 8] - p[o + 8]) * f, FLAG_END);
   };
   const covered = (k) => (coverAt ? coverAt(p[k * POINT_DOUBLES + 3]) : NaN);
+  // A JOIN end's room JOIN_PAST on past it, along the stretch to it from the point before.
+  const joined = [ends[0]?.type === MESH_END.JOIN && n >= 2, ends[1]?.type === MESH_END.JOIN && n >= 2];
+  const past = (k, j) => {
+    const o = k * POINT_DOUBLES, q = j * POINT_DOUBLES, m = metresLon(p[o + 1]);
+    const dx = (p[o] - p[q]) * m, dy = (p[o + 1] - p[q + 1]) * M_LAT, l = Math.hypot(dx, dy);
+    if (!(l > 1e-6)) return;
+    const [lon, lat] = middle(k), f = JOIN_PAST / l;
+    put(lon + (dx * f) / m, lat + (dy * f) / M_LAT, p[o + 2], p[o + 8], FLAG_END);
+  };
+  const flagOf = (k) => ((joined[0] && k <= 1) || (joined[1] && k >= n - 2) ? FLAG_END : covered(k) > DEEP ? FLAG_DEEP : 0);
+  if (joined[0]) past(0, 1);
   beyond(0, ends[0]);
   for (let k = 0; k < n; k++) {
     const [lon, lat] = middle(k), o = k * POINT_DOUBLES;
     // (The last portal's first piece before its own point.)
     if (k === n - 1 && k > 0) inward(k, k - 1, ends[1]);
-    put(lon, lat, p[o + 2], p[o + 8], covered(k) > DEEP ? FLAG_DEEP : 0);
+    put(lon, lat, p[o + 2], p[o + 8], flagOf(k));
     if (k === 0) inward(0, 1, ends[0]);
   }
   beyond(n - 1, ends[1]);
+  if (joined[1]) past(n - 1, n - 2);
   const thinned = thin(out, flags);
   const points = Float64Array.from(thinned.points), count = points.length / CUT_DOUBLES;
   flags.length = 0;
