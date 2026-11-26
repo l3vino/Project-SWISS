@@ -559,9 +559,9 @@ function wideOf(sec, spread) {
   return boreWide(sec.half, spread, sec.low?.half ?? 0);
 }
 
-/** An outline's (sections.js outlineAt) half-width at its widest (a bored tube's circle, else its walls), and the
- *  height of its roof over the floor `x` metres from its middle. */
-export function sideOf(o) {
+/* An outline's (sections.js outlineAt) half-width at its widest (a bored tube's circle, else its walls), and the
+ * height of its roof over the floor `x` metres from its middle. */
+function sideOf(o) {
   return o.lowR > 0 ? o.archA : o.half;
 }
 function roofAt(o, x) {
