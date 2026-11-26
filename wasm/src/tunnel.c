@@ -319,11 +319,13 @@ static void ring_between(Ring *R, const double *A, const double *B, double f) {
   R->lon = A[0] + (B[0] - A[0]) * f; R->lat = A[1] + (B[1] - A[1]) * f; R->h = A[2] + (B[2] - A[2]) * f;
   R->s = A[3] + (B[3] - A[3]) * f; R->mx = A[4] + (B[4] - A[4]) * f; R->my = A[5] + (B[5] - A[5]) * f;
   R->ppm = A[6] + (B[6] - A[6]) * f; R->off = A[7] + (B[7] - A[7]) * f; R->wide = A[8] + (B[8] - A[8]) * f;
-  const double *L = f < 0.5 ? A : B;
   R->lines = A[9] > B[9] ? A[9] : B[9];
+  /* A line runs where both points have it, and at a point that has it; not half the way on to one that has not
+   * (5.18l: a branch's line in a junction cavern began a metre outside the cavern's end wall, over the branch's own
+   * track, which ends at the wall). */
   for (u32 t = 0; t < 6u; t++) {
     const double a = A[10 + t], b = B[10 + t];
-    R->lineAt[t] = a == a && b == b ? a + (b - a) * f : L[10 + t];
+    R->lineAt[t] = a == a && b == b ? a + (b - a) * f : f <= 1e-6 ? a : f >= 1.0 - 1e-6 ? b : __builtin_nan("");
   }
 }
 

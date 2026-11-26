@@ -2347,7 +2347,8 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
       if (Math.abs(y - jy) < best) { best = Math.abs(y - jy); reach = mainT.points[k + 3] + mainT.points[k + 4]; }
     }
     joinLine = `the branch's open end ${jx.toFixed(1)} m off the main's line, its reach there ${reach.toFixed(1)} m`;
-    if (jx > reach) problems.push(`a branch's open end outside the room it opens into: ${joinLine}`);
+    // (Since 5.18l the open end lies on the cavern's end wall, where the reach is the branch's line's: within 10 cm.)
+    if (jx > reach + 0.1) problems.push(`a branch's open end outside the room it opens into: ${joinLine}`);
     // (5.17q) Where its tracks are (groups.js `lines`: how many places, then each track's offset, NaN where it does
     // not run): the branch beside the spine in a place of its own, running from the switch (within 0.5 m of the main's
     // track where it starts) without a break to where it leaves.
@@ -2609,9 +2610,13 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const wallY = main && wall >= 0 ? y(main.points[wall * TUBE_POINT + 1]) : NaN;
   const joinEnd = branch?.ends.find((e) => e.type === TUBE_END.JOIN), inside = joinEnd ? y(joinEnd.lat) - wallY : NaN;
   const off = Math.abs(wallY) * a;
+  // (5.18l: the branch's tube ends on the wall, where the cavern's own track for its line begins: one track, end to end.)
+  let copyFrom = -1;
+  if (main) for (let k = 0; k < main.points.length / TUBE_POINT && copyFrom < 0; k++) if (Number.isFinite(main.lines[k * 7 + 2])) copyFrom = k;
   if (!(before <= 0.05 && at >= off - 0.1 && step <= 2.1)) problems.push(`the wall: ${before.toFixed(2)} → ${at.toFixed(2)} m over ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off)`);
-  if (!(inside >= 0 && inside <= 3.1)) problems.push(`the branch's end ${inside.toFixed(1)} m past the wall`);
-  console.log(`junction caverns: a branch leaving at 5.2°, the bore's reach ${before.toFixed(2)} → ${at.toFixed(2)} m within ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off), its tube ending ${inside.toFixed(1)} m inside the wall — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  if (!(Math.abs(inside) <= 0.3)) problems.push(`the branch's end ${inside.toFixed(2)} m from the wall`);
+  if (copyFrom !== wall) problems.push(`the cavern's track for the branch's line from sample ${copyFrom}, the wall at ${wall}`);
+  console.log(`junction caverns: a branch leaving at 5.2°, the bore's reach ${before.toFixed(2)} → ${at.toFixed(2)} m within ${step.toFixed(1)} m (the branch ${off.toFixed(2)} m off), its tube ending ${inside.toFixed(2)} m from the wall, the cavern's track for its line from the wall on — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 

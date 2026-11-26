@@ -77,6 +77,15 @@ export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, f
   if (k0 + 1 < n) { moveLines(k0, k0 + 1, from); moveTo(k0, k0 + 1, from); }
   if (k1 > 0 && k1 - 1 >= k0) { moveLines(k1, k1 - 1, to); moveTo(k1, k1 - 1, to); }
   const keep = [k0];
+  // Whether sample k steps from the one before: a line comes or goes, or the bore's middle or width jumps (5.18l).
+  const stepAt = (k) => {
+    const o = k * TUBE_POINT, q = o - TUBE_POINT;
+    if (Math.abs(p[o + 3] - p[q + 3]) > SHIFT || Math.abs(p[o + 4] - p[q + 4]) > SHIFT) return true;
+    if (L === null) return false;
+    if (L[k * LINE_FLOATS] !== L[(k - 1) * LINE_FLOATS]) return true;
+    for (let i = 1; i < LINE_FLOATS; i++) if (Number.isNaN(L[k * LINE_FLOATS + i]) !== Number.isNaN(L[(k - 1) * LINE_FLOATS + i])) return true;
+    return false;
+  };
   // The floor's grade on from a kept point (a floor kept under the ground bends: fit.js).
   const gradeAt = (s) => (floorAt(s + 2) - floorAt(s)) / 2;
   let last = k0, lastDir = dirAt(k0), lastFloor = floorAt(p[k0 * TUBE_POINT + 2]), lastGrade = gradeAt(p[k0 * TUBE_POINT + 2]);
@@ -91,6 +100,10 @@ export function meshPoints(tube, floorAt, half, zoom, from = 0, to = Infinity, f
       linesMoved = Number.isNaN(a) !== Number.isNaN(b) || Math.abs(a - b) > SHIFT;
     }
     if (turned > TURN || bent || linesMoved || Math.abs(p[o + 3] - p[l + 3]) > SHIFT || Math.abs(p[o + 4] - p[l + 4]) > SHIFT || s - p[l + 2] >= KEEP_MOST) {
+      // (A step from the sample before, a line coming or going there or the bore widening at once: that sample too, so
+      // it stays a step, not drawn out back to the last point kept: 5.18l, a junction cavern's end wall (groups.js
+      // wallOf) became a slope up to KEEP_MOST long, across the branch's tube.)
+      if (k - 1 > last && stepAt(k)) keep.push(k - 1);
       keep.push(k); last = k; lastDir = d; lastFloor = floorAt(s); lastGrade = gradeAt(s);
     }
   }

@@ -73,12 +73,6 @@ const WIDTH_SMOOTH = 10;
 /* Metres from a spine's end within which a chain beside it coming out makes
  * the bore's end a portal. */
 const PORTAL_NEAR = 25;
-/* Metres a branch's own bore runs on back into the bore it leaves, past that bore's end wall where it leaves it
- * (5.18k, wallOf: the bore is as wide as the branch needs right up to there; one of its samples and a metre more).
- * 5.17m ran it JOIN_INTO = 20 m back, as the bore's reach, smoothed along, fell short where it left (3.4 m for a branch
- * leaving at 5°): by the Ceneri junction the branch's tube then ran on inside the bore flaring out round it. What of
- * it lies inside the bore is not drawn (shaders/tunnel.wgsl fsMeet). */
-const JOIN_FLUSH = 3;
 
 export const TUBE_END = { PORTAL: 1, OPEN: 2, CLOSED: 3, JOIN: 4 };
 /* Floats per spine point in a tube's points. */
@@ -505,7 +499,7 @@ function boreOf(spine, others, frame, priority) {
   const portals = [];                       // metres along the spine where a chain beside it comes out
   // Each chain's samples beside the spine: the spine's sample each lies by (-1: none) and how far across.
   const seen = others.map((c) => {
-    const n = c.steps, at = new Int32Array(n + 1).fill(-1), acr = new Float64Array(n + 1);
+    const n = c.steps, at = new Int32Array(n + 1).fill(-1), acr = new Float64Array(n + 1), back = new Float64Array(n + 1);
     for (let k = 0; k <= n; k++) {
       const best = nearestSample(spine, c.X[k], c.Y[k], BESIDE_ACROSS, found);
       if (best < 0) continue;
@@ -513,20 +507,22 @@ function boreOf(spine, others, frame, priority) {
       if (Math.abs(along) > BESIDE_ALONG) continue;
       // How far across it is at the spine's own sample, not at its own up to a metre along from it (5.18j: a line
       // converging at 5° stepped 0.18 m wherever two of its samples fell by one of the spine's, a kink in its rails):
-      // back along its own way by that much.
+      // back along its own way by that much (`back`: its metres, to where it is across from the spine's sample).
       const runAlong = c.TX[k] * TX[best] + c.TY[k] * TY[best], runAcross = c.TX[k] * TY[best] - c.TY[k] * TX[best];
       at[k] = best;
-      acr[k] = dx * TY[best] - dy * TX[best] - (Math.abs(runAlong) > 0.5 ? (runAcross / runAlong) * along : 0);
+      back[k] = Math.abs(runAlong) > 0.5 ? along / runAlong : 0;
+      acr[k] = dx * TY[best] - dy * TX[best] - runAcross * back[k];
     }
-    return { at, acr };
+    return { at, acr, back };
   });
   if (spine.family === FAMILY_RAIL && others.length) keepContiguous(others, seen, steps);
   const walled = [];   // the chains that leave the bore as tubes of their own: their reach apart, and where it stops
   for (let ci = 0; ci < others.length; ci++) {
-    const c = others[ci], n = c.steps, { at, acr } = seen[ci];
-    // Stretches beyond the bore, BRANCH_LEAST long or more, go on as chains of their own, from JOIN_FLUSH inside the
-    // bore; where one leaves it, the bore is as wide for this chain as it needs up to there and no further: its end
-    // wall (wallOf, 5.18k).
+    const c = others[ci], n = c.steps, { at, acr, back } = seen[ci];
+    // Stretches beyond the bore, BRANCH_LEAST long or more, go on as chains of their own, from the bore's end wall
+    // where one leaves it: the bore is as wide for this chain as it needs up to there and no further (wallOf, 5.18k),
+    // and the chain's own tube opens there, its JOIN end on its line exactly across from the spine's sample at the wall
+    // (5.18l: 5.18k ran it on 3 m, its track over the cavern's for those metres, a step where the two beds met).
     const walls = [];
     for (let k = 0; k <= n;) {
       if (at[k] >= 0) { k++; continue; }
@@ -534,7 +530,8 @@ function boreOf(spine, others, frame, priority) {
       while (e < n && at[e + 1] < 0) e++;
       const a = k * c.ds, b = e * c.ds;
       if (b - a >= BRANCH_LEAST) {
-        left.push(stretch(c, k === 0 ? a : Math.max(0, a - JOIN_FLUSH), e === n ? b : Math.min(c.length, b + JOIN_FLUSH),
+        const from = k === 0 ? a : (k - 1) * c.ds - back[k - 1], to = e === n ? b : (e + 1) * c.ds - back[e + 1];
+        left.push(stretch(c, Math.max(0, Math.min(a, from)), Math.min(c.length, Math.max(b, to)),
           k === 0 ? c.ends[0] : TUBE_END.JOIN, e === n ? c.ends[1] : TUBE_END.JOIN));
         const w0 = k > 0 ? wallOf(at, k - 1, -1) : null, w1 = e < n ? wallOf(at, e + 1, 1) : null;
         if (w0) walls.push(w0);

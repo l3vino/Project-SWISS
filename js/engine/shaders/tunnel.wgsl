@@ -686,23 +686,6 @@ fn inMeets(rel : vec3f, own : f32, onTop : bool, grow : f32) -> bool {
   return false;
 }
 
-// Whether a pixel lies in the room of a tube this one opens into (its JOIN end there: cuts.js marks those pieces, their
-// low.w under 0), from 1.2 m under the top of what is walked on there up (under a walkway's top too: a branch's track
-// ran on beside the switch under the other's walkway, live by Giubiasco): where a branch's tracks give way (5.17q).
-fn inMain(rel : vec3f) -> bool {
-  let q = slotPoint(rel);
-  if (q.w == 0.0) { return false; }
-  let last = min(cutSlot.count, CUT_MOST);
-  var found = false;
-  for (var i = 0u; i < last; i++) {
-    let c = cutSlot.list[i];
-    if (c.low.w >= 0.0) { continue; }
-    let r = cutAt(c, q.xyz, -MEET_IN, MEET_FIT);
-    found = found || (r.y > 0.0 && r.x > -1.2);
-  }
-  return found;
-}
-
 // Whether a floor's pixel lies in another bore's room, at its floor's height or over it: a junction, where each
 // tube's markings would cross the other's.
 fn onOther(rel : vec3f) -> bool {
@@ -728,14 +711,13 @@ fn fsMeet(in : VSOut) -> @location(0) vec4f {
   let fw = max(fwidth(in.along), 1e-3);
   let fa = max(fwidth(in.ah.x) + fwidth(in.ah.y), 1e-3);
   let onTop = in.material == T_WALKWAY && dot(normalize(in.normal), localUp(in.world)) > 0.7;
-  // A railway's tracks (beds and rails) give way only in the tube a branch opens into (5.17q: there that tube's own
-  // tracks run on to the switch; elsewhere a track inside the other's room is where its line runs). Its fittings on
-  // the walls and in the vault (handrails, the overhead line) go with the walls.
+  // A railway's tracks (beds and rails) stay: a branch's tube ends at the end wall of the cavern it opens into, where
+  // the cavern's own track for its line begins (groups.js wallOf, 5.18l; up to 5.18k a branch's tracks gave way inside
+  // the other's room, which it ran into, and the two met with a gap or a step). Its fittings on the walls and in the
+  // vault (handrails, the overhead line) go with the walls.
   let track = in.material == T_BED || in.material == T_RAIL;
   var leftOut = false;
-  if (track) {
-    leftOut = inMain(in.rel);
-  } else if (in.material != T_FLOOR) {
+  if (!track && in.material != T_FLOOR) {
     leftOut = inMeets(in.rel, in.ah.y, onTop, select(-MEET_IN, MEET_FITTING, in.material == T_FIXTURE || in.material == T_INSULATOR));
   }
   if (leftOut && !MEET_SHOW) { discard; }

@@ -629,6 +629,42 @@ export class TunnelSet {
     }
   }
 
+  /* Where each railway tube opens into another (its JOIN ends, #joins), how its track meets that one's track for its
+   * line there (5.18l, his words on 5.18k: "either there is a gap between them ... or they have a vertical gap or
+   * slightly missaligned"), for the probe: metres across between its line and the nearest line of the other at its end,
+   * metres along from its end to where that line begins or ends (0: they meet; negative: it runs on past the end, the
+   * two side by side), and its floor's height there over the other's. */
+  #handovers() {
+    const out = [];
+    for (const r of this.records.values()) {
+      if (r.tube.family !== 2 || !r.floorAt || !r.joins) continue;
+      for (const [e, j] of r.joins) {
+        const q = [...this.records.values()].find((x) => x.tube.key === j.with);
+        if (!q?.floorAt || !q.tube.lines) continue;
+        const end = r.tube.ends[e], at = placeOn(q.tube, end.lon, end.lat);
+        const p = q.tube.points, n = p.length / TUBE_POINT, L = q.tube.lines;
+        const k = Math.max(0, Math.min(n - 1, Math.round(at.s / (p[(n - 1) * TUBE_POINT + 2] / Math.max(1, n - 1)))));
+        // The other's line nearest its end, and how far it runs either way from there.
+        let line = -1, across = Infinity;
+        for (let i = 1; i < LINE_FLOATS; i++) {
+          const o = L[k * LINE_FLOATS + i];
+          if (Number.isFinite(o) && Math.abs(o - at.across) < across) { across = Math.abs(o - at.across); line = i; }
+        }
+        let along = NaN;
+        if (line > 0) {
+          let a = k, b = k;
+          while (a > 0 && Number.isFinite(L[(a - 1) * LINE_FLOATS + line])) a--;
+          while (b < n - 1 && Number.isFinite(L[(b + 1) * LINE_FLOATS + line])) b++;
+          along = -Math.min(at.s - p[a * TUBE_POINT + 2], p[b * TUBE_POINT + 2] - at.s);
+        }
+        const r2 = (v) => (Number.isFinite(v) ? Math.round(v * 100) / 100 : null);
+        out.push({ from: r.tube.key, end: e, to: q.tube.key, across: r2(across), along: r2(along),
+          rise: r2(r.floorAt(e ? r.tube.length : 0) - q.floorAt(at.s)) });
+      }
+    }
+    return out;
+  }
+
   /* The railway portal nearest a portal end, within PORTAL_TWIN metres, that a track runs out of (#approachOf), or
    * null (5.18g). */
   #twinPortal(end) {
@@ -1336,6 +1372,7 @@ export class TunnelSet {
     }));
     return {
       ...this.stats, enabled: this.enabled, bytes: this.gpuBytes, tubes, railNet: this.railNet.size,
+      handovers: this.#handovers(),
       // The whole tunnels traced (#runTrace), which tubes take as theirs (offWhole).
       wholes: this.wholes.map((w) => ({ key: w.key, length: Math.round(w.length), ends: w.ends.map((e) => [e.type, Math.round(e.lat * 1e5) / 1e5, Math.round(e.lon * 1e5) / 1e5]) })),
       // The tubes gone but still drawn until one taking their place is (retiring).
