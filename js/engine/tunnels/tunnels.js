@@ -1433,7 +1433,8 @@ export class TunnelSet {
       // its floor was kept under the ground (how far it dipped under the line between its portals, and how much of it
       // still stands out of the ground past its mouths).
       skipped: r.skipped, cover: Number.isFinite(r.fit?.cover) ? r.fit.cover : null,
-      fit: r.fit?.ends.map((f) => f && { face: f.face, collar: f.collar, shell: f.shell, start: f.start, over: f.over }) ?? null,
+      fit: r.fit?.ends.map((f) => f && { face: f.face, collar: f.collar, shell: f.shell, start: f.start, over: f.over,
+        fill: f.fill?.map((l) => ({ points: l.points.length / 5, from: l.points[3], to: l.points[l.points.length - 2], height: l.points[2], mouth: l.mouth })) ?? null }) ?? null,
       trims: r.tube.ends.map((e) => this.trimAt(e, r.tube.family)),
       key: r.tube.key, layer: r.tube.layer,
       // Where it dips under a tube it crosses (#crossings): with which, where along it, how deep.

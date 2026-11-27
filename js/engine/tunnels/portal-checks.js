@@ -81,13 +81,14 @@ export class PortalChecks {
     let found = false;
     for (let e = 0; e < 2; e++) {
       const end = t.ends[e], f = t.fit[e], q = t.portals?.[e];
-      if (end.type !== TUBE_END.PORTAL || !f || !q || q.tries >= LIFT_TRIES) continue;
+      // (Not one whose tube runs on out of it under a way crossing over its mouth, 5.18o: that way's level and the ground
+      // filled in over the tube stand right behind where the road in front starts.)
+      if (end.type !== TUBE_END.PORTAL || !f || !q || q.tries >= LIFT_TRIES || f.collar > 0) continue;
       const floor = t.floorAt(p[e ? p.length - TUBE_POINT + 2 : 2]);
       const m = 111320 * Math.cos((end.lat * Math.PI) / 180), ox = end.dirX, oy = end.dirY;
       const a = Math.min(LIFT_ACROSS, f.half / 2);
       let lo = Infinity, hi = -Infinity, sum = 0, n = 0, known = true;
-      // (Out of its collar where its tube runs on out of the portal under a way crossing over it: 5.18n.)
-      for (const d of LIFT_OUT.map((x) => x + (f.collar ?? 0))) {
+      for (const d of LIFT_OUT) {
         for (const c of [-a, 0, a]) {
           // Out of the portal (ox, oy), and right of that (oy, -ox).
           const lon = end.lon + (ox * d + oy * c) / m, lat = end.lat + (oy * d - ox * c) / 111132;

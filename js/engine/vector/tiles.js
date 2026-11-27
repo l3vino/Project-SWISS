@@ -658,6 +658,9 @@ export class VectorTiles {
     }
   }
 
+  /** Whether detail tiles still owe pins for portal floors that came (render.js holds the portals' checks till then). */
+  get portalsPending() { return this.portalDirty.size > 0; }
+
   /* As many tiles as a millisecond allows: their portals' pins (joined with their bridges' in the block the terrain
    * reads); a tile whose pins change is cut into the terrain again. */
   #refreshPortals() {

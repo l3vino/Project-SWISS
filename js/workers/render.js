@@ -590,8 +590,10 @@ function step(dt) {
   tunnels.update(camera);
   profiler.lap('tunnels');
   // The portals' floors against the roads in front of them as drawn (the ground cut with the roads as they are now),
-  // and where their tubes start against it (portal-checks.js; what they find goes to the tunnels' thread).
-  if (++streamFrames % LIFT_EVERY === 0) tunnels.checkPortals(portalGround);
+  // and where their tubes start against it (portal-checks.js; what they find goes to the tunnels' thread). Not while
+  // the road tiles still owe pins for floors that came (5.18o: until they make them the ground looks cut with the roads
+  // as they are, and by the Ceneri north portal a floor followed the old ground 2 m up).
+  if (++streamFrames % LIFT_EVERY === 0 && !vector.portalsPending) tunnels.checkPortals(portalGround);
   profiler.lap('tunnel checks');
   // Every layer has chosen what it wants: hand out the decode threads.
   scheduler.dispatch();
