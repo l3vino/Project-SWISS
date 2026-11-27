@@ -272,7 +272,7 @@ rpc.on('vector-tile', async ({ url, z, x, y, schema, margin, detail, priority },
     const block = result.block.subarray(0, result.size);
     result.arcs = segmentArcs(block);
     result.runs = bridgeRuns({ block, arcs: result.arcs });
-    result.tunnels = tunnelRuns(block, z, x, y, schemaKinds(schema));
+    result.tunnels = tunnelRuns(block, z, x, y, schemaKinds(schema), { implied: true });
     result.$transfer.push(result.arcs.buffer);
   }
   return result;

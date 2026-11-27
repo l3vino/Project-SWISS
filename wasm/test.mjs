@@ -1819,6 +1819,36 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (!portalAt(8.58876, 46.66282, 'rail')) problems.push('Göschenen: no rail portal at the station');
   if (!gRuns.some((r) => r.kind === 'trunk')) problems.push('Göschenen: no road tunnel');
   if (!gRuns.some((r) => r.kind === 'rack')) problems.push('Göschenen: no rack railway tunnel');
+  // (5.18p) The ways passing under others with no tunnel in the data (runs.js impliedOf): at Göschenen a path crosses
+  // under the rack railway's bridge with no point the two share, an implied run over it, its ground read at the
+  // crossing and either side; a road crossing the rack line where that runs lower (its layer -1) is not one. Kept where
+  // the bare ground at the crossing stands a way's clearance and 1.5 m over the line between its lowest either side
+  // (runs.js impliedHolds: 6.0 m over a road by Bellinzona); and once built, the road's stretch in it left out of the
+  // ground (vector/portals.js `inside`).
+  const { impliedHolds } = await import('../js/engine/tunnels/runs.js');
+  const { portalPinsFor: pinsForPortals } = await import('../js/engine/vector/portals.js');
+  const gImplied = tunnelRuns(vt.block, 14, 8582, 5785, kinds, { implied: true }).filter((r) => r.implied);
+  const nearRun = (lon, lat) => gImplied.find((r) => {
+    for (let i = 0; i < r.implied.crossings; i++) if (Math.hypot((r.implied.probe[3 * i] - lon) * 76500, (r.implied.probe[3 * i + 1] - lat) * 111132) < 3) return true;
+    return false;
+  });
+  const pathBelow = nearRun(8.587964, 46.662226), roadOver = nearRun(8.587773, 46.661904);
+  const runLength = (r) => r ? Math.abs(r.ends[1].pin.s - r.ends[0].pin.s) : 0;
+  const humpOf = (h, sideH) => {
+    const probe = [8.6, 46.5, 50, 8.6, 46.5, 30, 8.6, 46.5, 70, 8.6, 46.5, 26, 8.6, 46.5, 74];
+    return impliedHolds({ implied: { probe: Float64Array.from(probe), crossings: 1, lo: 45, hi: 55 } }, Float64Array.of(500 + h, sideH[0], sideH[1], 501, 501), 2.5);
+  };
+  const humpHolds = humpOf(6.0, [500, 500.5]), lowHolds = humpOf(3.0, [500, 500.5]), slopeHolds = humpOf(6.0, [497, 503]);
+  const runI = pathBelow ?? { ends: [{ pin: { x: 100, y: 100, s: 10, dir: -1, line: 7 } }, { pin: { x: 200, y: 100, s: 60, dir: 1, line: 7 } }], points: Float64Array.of(8.58, 46.66, 8.581, 46.66), implied: {} };
+  const k0 = 0, endLon = runI.points[k0], endLat = runI.points[k0 + 1];
+  const insideI = pinsForPortals([runI], [{ lon: endLon, lat: endLat, height: 1100, rise: 0, half: 2, outX: -1, outY: 0, cut: 0 }],
+    { z: 14, x: 8582, y: 5785, extent: 4096, mpu: 0.4 }).inside;
+  const impliedLine = `ways passing under others with no tunnel in the data at Göschenen: ${gImplied.length} found, the path under the rack bridge ` +
+    `${pathBelow ? `${runLength(pathBelow).toFixed(1)} m (${pathBelow.implied.crossings} crossing, ${pathBelow.implied.probe.length / 3} points read)` : 'not found'}, ` +
+    `the road over the lower rack line ${roadOver ? 'taken' : 'not taken'}; a 6 m hump over a road ${humpHolds ? 'kept' : 'dropped'}, 3 m ${lowHolds ? 'kept' : 'dropped'}, ` +
+    `6 m on a slope rising 6 m across it ${slopeHolds ? 'kept' : 'dropped'}; built, ${insideI ? `${(insideI[2] - insideI[1]).toFixed(1)} m of its road` : 'none'} left out of the ground`;
+  if (!(pathBelow && !roadOver && runLength(pathBelow) >= 8 && humpHolds && !lowHolds && slopeHolds && insideI &&
+        Math.abs(insideI[2] - insideI[1] - runLength(pathBelow)) < 0.01)) problems.push(impliedLine);
   const gTubes = tubesFrom(gRuns);
   const gRail = gTubes.filter((t) => t.family === 2).sort((a, b) => b.length - a.length)[0];
   if (!gRail || gRail.tracks < 2 || gRail.ends[0].type !== TUBE_END.PORTAL && gRail.ends[1].type !== TUBE_END.PORTAL) problems.push(`Göschenen rail tube ${JSON.stringify(gRail?.ends)}`);
@@ -2308,7 +2338,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     `under a valley the floor dips ${dip.floor.dipped.toFixed(1)} m (vault ≥ ${worstCover.toFixed(2)} m under the ground, ≤ ${(worstGrade * 100).toFixed(2)}%); ` +
     `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}; ${crossLine}; ${fillLine}`;
   console.log(`tunnels: stand-in ${rail.length} railway tube, ${t0?.tracks} tracks, ${t0?.length.toFixed(0)} m, ends ${t0?.ends.map((e) => e.type).join('/')}; ` +
-    `Göschenen ${gRuns.length} runs → ${gTubes.length} tubes; ${meshLine}; ${fitLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+    `Göschenen ${gRuns.length} runs → ${gTubes.length} tubes; ${impliedLine}; ${meshLine}; ${fitLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 

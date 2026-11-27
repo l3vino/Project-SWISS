@@ -55,6 +55,7 @@ import { boreCut, addAprons, boreMeets } from './cuts.js';
 import { placedCopy, wingOff, WING_SPLAY, WING_LEN } from './placed.js';
 import { railFloors, stationFloor, gradeLimit, steepest } from './junctions.js';
 import { floorKey } from '../vector/portals.js';
+import { impliedKey, impliedPoints, impliedHolds } from './runs.js';
 
 const GATHER_MS = 400;
 /* A tube gone from the tiles round the camera (they moved: its open end with them) keeps being drawn until the
@@ -82,6 +83,9 @@ const APPROACH_MATCH = 3;
 /* A run's end this close to a portal gives the ways that may cross over it (runs.js `over`, 5.18n: a tube of several
  * lines comes out of one mouth; within the cells #approachIndex looks in). */
 const OVER_MATCH = 7;
+/* The implied runs' ground lists read at once (#impliedProbes, 5.18p: a tile has a few dozen crossings with no shared
+ * point; the lists of the tubes themselves are not to be pushed out). */
+const IMPLIED_BATCH = 12;
 /* The road in front of a portal: the ground NEAR, each taken back to the portal along the line through the ground
  * to RISE_REACH metres out (its rise out of the portal), their median (a portal mapped a little inside the hillside
  * has its face in the first metres out: under half of them); unless that is NEAR_OVER over the approach's line at
@@ -200,6 +204,10 @@ export class TunnelSet {
     this.railDirty = false;
     this.railAt = 0;
     this.approaches = null;        // the runs' approach ends by cell (#approachOf), for one tunnelVersion
+    this.implied = new Map();      // implied run key → whether its ground showed its way passing under (#impliedProbes, 5.18p)
+    this.impliedAsked = new Map(); // implied run key → its ground's list while it is read
+    this.impliedSeen = -1;         // the tunnelVersion its runs were last gathered at
+    this.impliedMore = false;      // whether some are still to be asked for (IMPLIED_BATCH at a time)
   }
 
   setEnabled(on) {
@@ -210,7 +218,7 @@ export class TunnelSet {
   /** What can start now (the console's swissgpu.settled waits for none of it, 5.18e; the jobs out the scheduler
    *  counts): the tubes to find, and per tube not settled its mesh, its trace or a ground tile it waits for (one to be
    *  tried again later is not). Into `why` by kind. */
-  pending(now = performance.now(), why = { tubes: 0, mesh: 0, trace: 0, ground: 0 }) {
+  pending(now = performance.now(), why = { tubes: 0, mesh: 0, trace: 0, ground: 0, implied: 0 }) {
     why.tubes = this.tubesWanted || this.tubesBusy ? 1 : 0;
     why.mesh = why.trace = why.ground = 0;
     for (const r of this.records.values()) {
@@ -219,7 +227,9 @@ export class TunnelSet {
       else if (r.traceWanted) why.trace++;
       else if (r.grounds?.some((g) => g.state === 'tiles' && g.tiles.some((t) => t.state === 'wanted'))) why.ground++;
     }
-    return why.tubes + why.mesh + why.trace + why.ground;
+    // (And the implied runs whose ground is still to read: 5.18p.)
+    why.implied = this.impliedAsked.size + (this.impliedMore ? 1 : 0);
+    return why.tubes + why.mesh + why.trace + why.ground + why.implied;
   }
 
   /** Whether the open track is built in 3D (the setting): a railway tube's bed then stands as high as its (5.18c),
@@ -243,6 +253,7 @@ export class TunnelSet {
       this.tubesWanted = true;
     }
     this.eye.lon = camera.lon; this.eye.lat = camera.lat;
+    this.#impliedProbes(now);
     const decks = this.vector.decks;
     if (decks && decks.epoch !== this.deckEpoch) { this.deckEpoch = decks.epoch; this.#decksCame(); }
     for (const r of this.records.values()) { this.asking = r; this.#advance(r); }
@@ -352,19 +363,79 @@ export class TunnelSet {
   async #runTubes() {
     this.tubesWanted = false;
     this.tubesBusy = true;
-    const runs = [];
-    for (const t of this.vector.tiles.values()) if (t.level === 0 && t.tunnels) runs.push(...t.tunnels);
+    // (The implied runs only where their ground showed their way passing under: #impliedProbes, 5.18p.)
+    const runs = [], implied = [];
+    for (const t of this.vector.tiles.values()) {
+      if (t.level !== 0 || !t.tunnels) continue;
+      for (const run of t.tunnels) {
+        if (!run.implied) runs.push(run);
+        else if (this.implied.get(impliedKey(run)) === true) implied.push(run);
+      }
+    }
     const priority = {};
     for (const k of this.vector.kinds ?? []) if (k) priority[k.id] = k.priority;
     const hints = this.#spineHints();
     try {
       const { tubes } = runs.length ? await this.client.run('tunnel-tubes', { runs, priority, hints }, { cls: VIEW, cost: 1 }) : { tubes: [] };
+      // The underpasses the data has no tunnel for, made into tubes of their own (none shares a bore with a tunnel's).
+      const more = implied.length ? (await this.client.run('tunnel-tubes', { runs: implied, priority, hints: [] }, { cls: VIEW, cost: 1 })).tubes : [];
+      for (const tube of more) { tube.implied = true; tubes.push(tube); }
       this.#reconcile(tubes);
     } catch (err) {
       if (err.name !== 'AbortError') { console.warn(`[tunnels] tubes: ${err.message}`); this.tubesWanted = true; this.changedAt = performance.now(); }
     } finally {
       this.tubesBusy = false;
     }
+  }
+
+  /* The implied runs (runs.js impliedOf, 5.18p: a road or path crossing under another way with no tunnel in the data):
+   * the ground at each one's crossings and either side read once, IMPLIED_BATCH lists at a time, the nearest the camera
+   * first; one whose ground shows its way passing under (runs.js impliedHolds) is kept, and the tubes are made again. */
+  #impliedProbes(now) {
+    const version = this.vector.tunnelVersion;
+    if (version === this.impliedSeen && !this.impliedAsked.size && !this.impliedMore) return;
+    let kept = false;
+    // Those asked for: done, or still waiting.
+    for (const [key, { run, g }] of this.impliedAsked) {
+      if (g.state === 'tiles') continue;
+      this.impliedAsked.delete(key);
+      this.ground.lists.delete(g.key);
+      const kind = (this.vector.kinds ?? []).find((k) => k?.id === run.kind) ?? null;
+      const ok = g.state === 'done' && impliedHolds(run, g.heights, clearanceFor({ family: run.family }, kind));
+      this.implied.set(key, ok);
+      if (ok) kept = true;
+    }
+    if (kept) { this.tubesWanted = true; this.changedAt = now; }
+    if (version === this.impliedSeen && this.impliedAsked.size >= IMPLIED_BATCH) return;
+    // The runs not looked at yet, the nearest first (and those of tiles gone forgotten).
+    const live = new Set(), fresh = [], m = 111320 * Math.cos((this.eye.lat * Math.PI) / 180);
+    for (const t of this.vector.tiles.values()) {
+      if (t.level !== 0 || !t.tunnels) continue;
+      for (const run of t.tunnels) {
+        if (!run.implied) continue;
+        const key = impliedKey(run);
+        live.add(key);
+        if (this.implied.has(key) || this.impliedAsked.has(key)) continue;
+        const p = run.implied.probe;
+        fresh.push({ key, run, d: Math.hypot((p[0] - this.eye.lon) * m, (p[1] - this.eye.lat) * 111132) });
+      }
+    }
+    if (version !== this.impliedSeen) {
+      for (const key of this.implied.keys()) if (!live.has(key)) this.implied.delete(key);
+      for (const [key, { g }] of this.impliedAsked) if (!live.has(key)) { this.impliedAsked.delete(key); this.ground.lists.delete(g.key); }
+      this.impliedSeen = version;
+    }
+    fresh.sort((a, b) => a.d - b.d);
+    let started = 0;
+    for (const { key, run } of fresh) {
+      if (this.impliedAsked.size >= IMPLIED_BATCH) break;
+      this.impliedAsked.set(key, { run, g: this.ground.list(`i|${key}`, () => ({ lonlat: impliedPoints(run) })) });
+      started++;
+    }
+    this.impliedMore = fresh.length > started;
+    let n = 0;
+    for (const v of this.implied.values()) if (v) n++;
+    this.stats.implied = { kept: n, read: this.implied.size, waiting: this.impliedAsked.size + fresh.length - started };
   }
 
   /* Where the bores' spines are to run (groups.js hints, 5.18a): from each portal of a whole tunnel traced, the point
@@ -532,7 +603,8 @@ export class TunnelSet {
     r.fit = fitTube({
       tube: near, floorAt: r.baseAt, section: r.rule, clearance: clearanceFor(near, r.kind), kind: r.kind, short, slopes,
       pts: fg.pts, heights: known, bare: fg.state === 'done' ? fg.heights : null, starts, spine: known ? spineOf(near, r.rule.half) : null,
-      underRails: rails?.raised > 0,
+      // (Not an implied one, 5.18p: its ends lie past the ground over it, where it starts as the ground covers it.)
+      underRails: rails?.raised > 0 && !near.implied,
     });
     r.floorAt = r.fit.floorAt ?? r.baseAt;
     if (!r.fit.section) {
@@ -1436,7 +1508,7 @@ export class TunnelSet {
       fit: r.fit?.ends.map((f) => f && { face: f.face, collar: f.collar, shell: f.shell, start: f.start, over: f.over,
         fill: f.fill?.map((l) => ({ points: l.points.length / 5, from: l.points[3], to: l.points[l.points.length - 2], height: l.points[2], mouth: l.mouth })) ?? null }) ?? null,
       trims: r.tube.ends.map((e) => this.trimAt(e, r.tube.family)),
-      key: r.tube.key, layer: r.tube.layer,
+      key: r.tube.key, layer: r.tube.layer, implied: Boolean(r.tube.implied),
       // Where it dips under a tube it crosses (#crossings): with which, where along it, how deep.
       dips: r.dips ? [...r.dips.entries()].map(([k, d]) => ({ with: k, s: Math.round(d.s), depth: r2(d.depth) })) : [],
       // Its ends opening into another tube, and the floor they meet there (#joins, 5.17m); its fitted floor at its

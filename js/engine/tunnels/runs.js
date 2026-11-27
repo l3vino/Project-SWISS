@@ -38,12 +38,60 @@ const APPROACH_KEEP = 30;
 /* Metres from a portal another way's open line is taken as passing over it (`over`, 5.18n), and the stretch of it kept:
  * its segments that come that near. */
 const OVER_NEAR = 20;
+/* A road or path passing under another way the data does not tunnel it under (`implied`, 5.18p): crossing that way's
+ * line at IMPLIED_SIN (30°) or more, away from any point the two lines share within JUNCTION_NEAR metres; crossings
+ * within IMPLIED_MERGE metres of each other's level widths along it one stretch, run on IMPLIED_PAST either side along
+ * its open line (IMPLIED_LEAST at least); its ground read at each crossing and IMPLIED_SIDES metres past the stretch on
+ * either side. Cells of IMPLIED_CELL tile units the crossings are looked for in. */
+const IMPLIED_SIN = 0.5, JUNCTION_NEAR = 2, IMPLIED_MERGE = 10, IMPLIED_PAST = 15, IMPLIED_LEAST = 8;
+const IMPLIED_SIDES = [2, 6, 10, 15, 20], IMPLIED_CELL = 64;
+
+/* An implied run is kept (impliedHolds) where the bare ground at its crossings stands IMPLIED_OVER over the line between
+ * its lowest on either side past the way's clearance (sections.js clearanceFor: a main road 4 m, another 2.5 m, a path
+ * 2 m): a deck or a track bed and what holds it (the Swiss clearance over a road is 4.5 m, and a road under a railway
+ * stands 5.5 to 7 m under its rails; by Bellinzona the ground reads 5.7 m over the road's line through either side). */
+const IMPLIED_OVER = 1.0;
+
+/** An implied run's key (the tunnels' thread keeps what its ground showed under it). */
+export function impliedKey(run) {
+  const p = run.implied.probe;
+  return `${run.kind}|${p[0].toFixed(6)}|${p[1].toFixed(6)}|${run.implied.crossings}`;
+}
+
+/** An implied run's probe as [lon, lat, …] for the ground to be read at. */
+export function impliedPoints(run) {
+  const p = run.implied.probe, out = new Float64Array((p.length / 3) * 2);
+  for (let i = 0, j = 0; i < p.length; i += 3, j += 2) { out[j] = p[i]; out[j + 1] = p[i + 1]; }
+  return out;
+}
+
+/**
+ * Whether an implied run's way passes under the others there (5.18p): the bare ground at its crossings (`heights`, as
+ * its probe) stands `clearance` and IMPLIED_OVER over the line between the lowest on either side of the stretch, at the
+ * highest crossing (the elevation model kept the bridge over it as ground). Where a side is not known, no.
+ */
+export function impliedHolds(run, heights, clearance) {
+  const { probe: p, crossings: k, lo, hi } = run.implied, n = p.length / 3;
+  let top = -Infinity, sTop = 0, left = null, right = null;
+  for (let i = 0; i < k; i++) if (Number.isFinite(heights[i]) && heights[i] > top) { top = heights[i]; sTop = p[3 * i + 2]; }
+  for (let i = k; i < n; i++) {
+    const s = p[3 * i + 2], z = heights[i];
+    if (!Number.isFinite(z)) continue;
+    if (s < lo && (!left || z < left[1])) left = [s, z];
+    if (s > hi && (!right || z < right[1])) right = [s, z];
+  }
+  if (!left || !right || !Number.isFinite(top)) return false;
+  const base = left[1] + ((right[1] - left[1]) * (sTop - left[0])) / (right[0] - left[0]);
+  return top - base >= clearance + IMPLIED_OVER;
+}
 
 /**
  * The tunnel runs of a block.
  * @param block  the tile's block (formats/vector-tile.js)
  * @param z, x, y  the tile (Web Mercator)
  * @param kinds  the schema's kinds (schemaTables(schema).kinds): id and family per kind number
+ * @param implied  whether to add the stretches where a road or path passes under another way without a tunnel in the
+ *               data (5.18p, impliedOf: runs with `implied`; the tunnels' thread keeps those the ground shows)
  * @returns [{ kind, family, layer, oneway, points: Float64Array [lon, lat, …], ends: [{ type, degree, approach, bridge, pin, over }, …] }]
  *          (approach: at a PORTAL, the line on beyond it, [lon, lat, …] from the portal out, APPROACH_KEEP metres
  *          at most, as far as the block has it; else null. bridge: whether that line goes on as a bridge. pin: where that line's road is pinned to the tunnel's
@@ -51,7 +99,7 @@ const OVER_NEAR = 20;
  *          it there (segmentArcs'), `dir` +1 where the line runs on out of the portal with s growing, -1 falling;
  *          else null. over: at a PORTAL, the other ways that may pass over it (5.18n, overOf), else null)
  */
-export function tunnelRuns(block, z, x, y, kinds) {
+export function tunnelRuns(block, z, x, y, kinds, { implied = false } = {}) {
   if (!block) return [];
   const u32 = new Uint32Array(block.buffer, block.byteOffset, block.byteLength >>> 2);
   const f32 = new Float32Array(block.buffer, block.byteOffset, block.byteLength >>> 2);
@@ -91,28 +139,49 @@ export function tunnelRuns(block, z, x, y, kinds) {
   // at a point there (one crossing at a node meets the road on the level). Per line, each stretch of its segments that
   // come that near: [{ line, kind, half (its kind's level half-width, metres), points: Float64Array [lon, lat, s, …] }],
   // or null where there is none.
+  // (The open segments of a kind shaped into the ground, with their boxes: made when a portal first asks, 5.18p: each
+  // portal went through every line of the tile, 20 ms a tile by Bellinzona.)
+  let openSegs = null;
   const overOf = (px, py, own, approach) => {
     arcs ??= segmentArcs(block);
     const reach = OVER_NEAR / metresPerUnit, mpu = f32[BLOCK.metresPerUnit];
+    if (!openSegs) {
+      openSegs = [];
+      for (let k = 0, count = u32[BLOCK.segmentCount]; k < count; k++) if (!tunnel(k) && !onBridge(k) && kinds[ATTR.kind(u32[segs + k * 8 + 6])]?.shape) openSegs.push(k);
+    }
+    // Those near, by line, in order along it.
+    const byLine = new Map();
+    for (const k of openSegs) {
+      const o = segs + k * 8;
+      if (Math.min(f32[o], f32[o + 2]) > px + reach || Math.max(f32[o], f32[o + 2]) < px - reach ||
+          Math.min(f32[o + 1], f32[o + 3]) > py + reach || Math.max(f32[o + 1], f32[o + 3]) < py - reach || gap(o, px, py) > reach) continue;
+      const l = u32[o + 7] & 0xffff;
+      if (l === own || l === approach) continue;
+      let list = byLine.get(l);
+      if (!list) byLine.set(l, (list = []));
+      list.push(k);
+    }
+    if (!byLine.size) return null;
     const meets = new Set();
     for (const l of new Set([own, approach])) {
       for (let k = u32[lines + l * 4], en = k + u32[lines + l * 4 + 1]; k < en; k++) { meets.add(at(segs + k * 8)); meets.add(at(segs + k * 8 + 2)); }
     }
     let out = null;
-    for (let l = 0, count = u32[BLOCK.lineCount]; l < count; l++) {
-      if (l === own || l === approach) continue;
-      const found = [];
-      let stretch = null, met = false;
-      for (let k = u32[lines + l * 4], en = k + u32[lines + l * 4 + 1]; k < en; k++) {
-        const o = segs + k * 8, attr = u32[o + 6], kind = kinds[ATTR.kind(attr)];
-        if (tunnel(k) || onBridge(k) || !kind?.shape || gap(o, px, py) > reach) { if (stretch) found.push(stretch); stretch = null; continue; }
-        if (meets.has(at(o)) || meets.has(at(o + 2))) met = true;
-        stretch ??= { kind: ATTR.kind(attr), half: kind.width / 2 + kind.bench, points: [lonOf(f32[o]), latOf(f32[o + 1]), arcs[k]] };
-        stretch.points.push(lonOf(f32[o + 2]), latOf(f32[o + 3]), arcs[k] + Math.hypot(f32[o + 2] - f32[o], f32[o + 3] - f32[o + 1]) * mpu);
+    for (const [l, list] of byLine) {
+      if (list.some((k) => meets.has(at(segs + k * 8)) || meets.has(at(segs + k * 8 + 2)))) continue;
+      // Each run of segments following on from each other, a stretch.
+      for (let i = 0; i < list.length;) {
+        let j = i;
+        while (j + 1 < list.length && list[j + 1] === list[j] + 1) j++;
+        const o0 = segs + list[i] * 8, attr = u32[o0 + 6], kind = kinds[ATTR.kind(attr)];
+        const points = [lonOf(f32[o0]), latOf(f32[o0 + 1]), arcs[list[i]]];
+        for (let q = i; q <= j; q++) {
+          const k = list[q], o = segs + k * 8;
+          points.push(lonOf(f32[o + 2]), latOf(f32[o + 3]), arcs[k] + Math.hypot(f32[o + 2] - f32[o], f32[o + 3] - f32[o + 1]) * mpu);
+        }
+        (out ??= []).push({ line: l, kind: ATTR.kind(attr), half: kind.width / 2 + kind.bench, points: Float64Array.from(points) });
+        i = j + 1;
       }
-      if (stretch) found.push(stretch);
-      if (met) continue;
-      for (const w of found) (out ??= []).push({ line: l, kind: w.kind, half: w.half, points: Float64Array.from(w.points) });
     }
     return out;
   };
@@ -123,7 +192,7 @@ export function tunnelRuns(block, z, x, y, kinds) {
     tunnelEnds.set(a, (tunnelEnds.get(a) ?? 0) + 1);
     tunnelEnds.set(b, (tunnelEnds.get(b) ?? 0) + 1);
   }
-  if (!tunnelEnds.size) return [];
+  if (!tunnelEnds.size && !implied) return [];
   // A line's segments from segment k on (step 1) or back (step -1) while open, from the point (px, py): its points
   // [lon, lat, …], APPROACH_KEEP metres at most.
   const walk = (lineFirst, lineEnd, k, step, px, py) => {
@@ -232,5 +301,155 @@ export function tunnelRuns(block, z, x, y, kinds) {
       s = e;
     }
   }
+  if (implied) runs.push(...impliedOf());
   return runs;
+
+  /* Where a road or path passes under another way that the data does not tunnel it under (5.18p, his words: "there are
+   * places where the road should go under the rails, but the data does not show that there is a tunnel... find an
+   * algorithm that figures such things out"): it crosses that way's line away from any point the two share (ways
+   * crossing on the level meet at a junction: JOSM's crossing-ways check has it so), that way not lower by its layer, at
+   * IMPLIED_SIN or more. Its stretch under the other ways' level widths (those within IMPLIED_MERGE of each other along
+   * it one) and IMPLIED_PAST either side along its open line is a tunnel run of its own, `implied: { probe: Float64Array
+   * [lon, lat, s, …] (each crossing, then IMPLIED_SIDES past the stretch either side), crossings (how many of them),
+   * lo, hi (metres along its line the level widths over it reach) }`, its ends portals pinned as a tunnel's are. The
+   * tunnels' thread keeps it only where the bare ground stands over it as a road's clearance and a structure would (the
+   * elevation model kept the bridge as ground there, as by Bellinzona: 6.0 m over the road for 18 m; where it left the
+   * bridge out, the way runs in the open under the deck), as a hydrologist breaches an embankment where a stream
+   * crosses a road. Crossings in the tile's own square only (the tile beyond has the rest). */
+  function impliedOf() {
+    arcs ??= segmentArcs(block);
+    const mpu = f32[BLOCK.metresPerUnit], count = u32[BLOCK.segmentCount];
+    const lenOf = (k) => Math.hypot(f32[segs + k * 8 + 2] - f32[segs + k * 8], f32[segs + k * 8 + 3] - f32[segs + k * 8 + 1]) * mpu;
+    const lineOf = (k) => u32[segs + k * 8 + 7] & 0xffff;
+    const kindOf = (k) => kinds[ATTR.kind(u32[segs + k * 8 + 6])];
+    // Each segment's part (LOWER: a way that may pass under, open, a road's or path's shaped into the ground; UPPER: one
+    // that may pass over, not a tunnel, a road's or railway's, shaped into the ground or a bridge), and the cells.
+    const LOWER = 1, UPPER = 2, part = new Uint8Array(count), cellKey = (cx, cy) => (cx + 1024) * 4096 + cy + 1024;
+    const cells = new Map();
+    for (let k = 0; k < count; k++) {
+      const a = u32[segs + k * 8 + 6], kd = kindOf(k);
+      if (!kd) continue;
+      if (!tunnel(k) && !onBridge(k) && kd.shape && kd.family === 1) part[k] |= LOWER;
+      if (ATTR.brunnel(a) !== TUNNEL && (kd.family === 1 || kd.family === 2) && (kd.shape || ATTR.brunnel(a) === BRIDGE)) part[k] |= UPPER;
+      if (!part[k]) continue;
+      const o = segs + k * 8;
+      for (let cx = Math.floor(Math.min(f32[o], f32[o + 2]) / IMPLIED_CELL); cx <= Math.floor(Math.max(f32[o], f32[o + 2]) / IMPLIED_CELL); cx++) {
+        for (let cy = Math.floor(Math.min(f32[o + 1], f32[o + 3]) / IMPLIED_CELL); cy <= Math.floor(Math.max(f32[o + 1], f32[o + 3]) / IMPLIED_CELL); cy++) {
+          let list = cells.get(cellKey(cx, cy));
+          if (!list) cells.set(cellKey(cx, cy), (list = []));
+          list.push(k);
+        }
+      }
+    }
+    const lower = (k) => (part[k] & LOWER) !== 0;
+    // Whether lines la and lb share a point within JUNCTION_NEAR of (px, py).
+    const pointsOf = new Map(), near = JUNCTION_NEAR / metresPerUnit;
+    const shared = (la, lb, px, py) => {
+      let theirs = pointsOf.get(lb);
+      if (!theirs) {
+        theirs = new Set();
+        for (let k = u32[lines + lb * 4], en = k + u32[lines + lb * 4 + 1]; k < en; k++) { theirs.add(at(segs + k * 8)); theirs.add(at(segs + k * 8 + 2)); }
+        pointsOf.set(lb, theirs);
+      }
+      for (let k = u32[lines + la * 4], en = k + u32[lines + la * 4 + 1]; k < en; k++) {
+        for (const o of [segs + k * 8, segs + k * 8 + 2]) if (Math.hypot(f32[o] - px, f32[o + 1] - py) <= near && theirs.has(at(o))) return true;
+      }
+      return false;
+    };
+    // The crossings, by the line passing under (each pair looked at in the cell its crossing lies in only).
+    const found = new Map();
+    for (const [key, list] of cells) {
+      for (const a of list) {
+        if (!lower(a)) continue;
+        const oa = segs + a * 8, la = lineOf(a), ax = f32[oa], ay = f32[oa + 1], dx = f32[oa + 2] - ax, dy = f32[oa + 3] - ay;
+        for (const b of list) {
+          if (a === b || !(part[b] & UPPER) || lineOf(b) === la) continue;
+          const ob = segs + b * 8, ex = f32[ob + 2] - f32[ob], ey = f32[ob + 3] - f32[ob + 1], den = dx * ey - dy * ex;
+          if (!(Math.abs(den) >= IMPLIED_SIN * Math.hypot(dx, dy) * Math.hypot(ex, ey))) continue;
+          const t = ((f32[ob] - ax) * ey - (f32[ob + 1] - ay) * ex) / den, u = ((f32[ob] - ax) * dy - (f32[ob + 1] - ay) * dx) / den;
+          if (!(t > 0.001 && t < 0.999 && u > 0.001 && u < 0.999)) continue;
+          const px = ax + dx * t, py = ay + dy * t;
+          if (px < 0 || px > E || py < 0 || py > E || cellKey(Math.floor(px / IMPLIED_CELL), Math.floor(py / IMPLIED_CELL)) !== key) continue;
+          const sin = Math.abs(den) / (Math.hypot(dx, dy) * Math.hypot(ex, ey));
+          if (ATTR.layer(u32[ob + 6]) < ATTR.layer(u32[oa + 6]) || shared(la, lineOf(b), px, py)) continue;
+          const kb = kindOf(b);
+          let list2 = found.get(la);
+          if (!list2) found.set(la, (list2 = []));
+          list2.push({ s: arcs[a] + lenOf(a) * t, reach: (kb.width / 2 + kb.bench) / sin, seg: a, lon: lonOf(px), lat: latOf(py) });
+        }
+      }
+    }
+    const out = [];
+    for (const [la, crossings] of found) {
+      crossings.sort((p, q) => p.s - q.s);
+      const first = u32[lines + la * 4], end = first + u32[lines + la * 4 + 1];
+      for (let i = 0; i < crossings.length;) {
+        let j = i, lo = crossings[i].s - crossings[i].reach, hi = crossings[i].s + crossings[i].reach;
+        while (j + 1 < crossings.length && crossings[j + 1].s - crossings[j + 1].reach - hi <= IMPLIED_MERGE) {
+          j++;
+          lo = Math.min(lo, crossings[j].s - crossings[j].reach);
+          hi = Math.max(hi, crossings[j].s + crossings[j].reach);
+        }
+        const run = impliedRun(la, first, end, crossings.slice(i, j + 1), lo, hi);
+        if (run) out.push(run);
+        i = j + 1;
+      }
+    }
+    return out;
+
+    /* The implied run of line la (its segments first..end) over crossings whose level widths reach from lo to hi along it. */
+    function impliedRun(la, first, end, crossings, lo, hi) {
+      // Its open stretch round the crossings.
+      let k0 = crossings[0].seg, k1 = crossings[crossings.length - 1].seg;
+      while (k0 - 1 >= first && lower(k0 - 1)) k0--;
+      while (k1 + 1 < end && lower(k1 + 1)) k1++;
+      const sMin = arcs[k0], sMax = arcs[k1] + lenOf(k1);
+      const sA = Math.max(sMin, lo - IMPLIED_PAST), sB = Math.min(sMax, hi + IMPLIED_PAST);
+      if (!(sB - sA >= IMPLIED_LEAST)) return null;
+      // The point at s along it (tile units).
+      const unitsAt = (s) => {
+        for (let k = k0; k <= k1; k++) {
+          const l = lenOf(k);
+          if (s > arcs[k] + l + 1e-6 && k < k1) continue;
+          const o = segs + k * 8, f = l > 0 ? Math.min(1, Math.max(0, (s - arcs[k]) / l)) : 0;
+          return [f32[o] + (f32[o + 2] - f32[o]) * f, f32[o + 1] + (f32[o + 3] - f32[o + 1]) * f];
+        }
+        return null;
+      };
+      const pts = [], a = unitsAt(sA), b = unitsAt(sB);
+      pts.push(lonOf(a[0]), latOf(a[1]));
+      for (let k = k0; k <= k1; k++) {
+        const s = arcs[k] + lenOf(k), o = segs + k * 8;
+        if (s > sA + 0.05 && s < sB - 0.05) pts.push(lonOf(f32[o + 2]), latOf(f32[o + 3]));
+      }
+      pts.push(lonOf(b[0]), latOf(b[1]));
+      // Its ends: portals, the road out of each pinned to the floor (as a tunnel's is), its approach as far as it is open.
+      const endAt = (s, p, dir) => {
+        const approach = [];
+        for (let d = 2; d <= APPROACH_KEEP; d += 2) {
+          const q = s + dir * d;
+          if (q < sMin || q > sMax) break;
+          const u = unitsAt(q);
+          approach.push(lonOf(u[0]), latOf(u[1]));
+        }
+        // (No ways over its ends: it runs on IMPLIED_PAST past what passes over it, and one crossing there is its own.)
+        return { type: END.PORTAL, degree: 0, approach: approach.length ? Float64Array.from(approach) : null, bridge: false,
+          pin: { x: p[0], y: p[1], line: la, s, dir }, over: null };
+      };
+      // Its ground read at each crossing, and past the stretch either side.
+      const probe = [];
+      for (const c of crossings) probe.push(c.lon, c.lat, c.s);
+      for (const d of IMPLIED_SIDES) {
+        for (const s of [lo - d, hi + d]) {
+          if (s < sMin || s > sMax) continue;
+          const u = unitsAt(s);
+          probe.push(lonOf(u[0]), latOf(u[1]), s);
+        }
+      }
+      const attr = u32[segs + crossings[0].seg * 8 + 6], kind = kinds[ATTR.kind(attr)];
+      return { kind: kind?.id ?? 'unknown', family: kind?.family ?? 1, layer: ATTR.layer(attr), oneway: ATTR.oneway(attr) !== 0,
+        points: Float64Array.from(pts), ends: [endAt(sA, a, -1), endAt(sB, b, 1)],
+        implied: { probe: Float64Array.from(probe), crossings: crossings.length, lo, hi } };
+    }
+  }
 }

@@ -132,7 +132,7 @@ export function floorKey(q) {
  */
 export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0, mpu: 1 }) {
   if (!floors.length) return { pins: null, widen: null, aprons: null, inside: null, sig: 0 };
-  const out = [], widen = [], aprons = [], inside = [], held = new Set(), mpu = tile.mpu || 1;
+  const out = [], widen = [], aprons = [], inside = [], held = new Set(), inRuns = new Set(), mpu = tile.mpu || 1;
   let h = 2166136261, own = 0;
   // A portal's apron: straight out of it (the block's y runs south), a line of its own (from the top of the block's
   // line numbers down), `half` either side, pinned at the portal.
@@ -212,6 +212,13 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
       h = Math.imul(h ^ (pin.line * 31 + Math.round(ps * 2)), 16777619);
       h = Math.imul(h ^ Math.round(z * 10), 16777619);
       if (collar > 0) inside.push(pin.line, Math.min(pin.s, ps), Math.max(pin.s, ps));
+      // (A road's stretch under another way with no tunnel in the data, built as one: in its tube, the road's pieces
+      // there left out, 5.18p: runs.js `implied`.)
+      if (run.implied && !inRuns.has(run)) {
+        inRuns.add(run);
+        const s0 = run.ends[0].pin?.s, s1 = run.ends[1].pin?.s;
+        if (Number.isFinite(s0) && Number.isFinite(s1)) inside.push(pin.line, Math.min(s0, s1), Math.max(s0, s1));
+      }
       if (best.over) for (const c of best.over) holdOver(c, run.ends[e].over);
       // (Onto a bridge, 5.17x: the deck carries the way out of the portal, the ground under it is left as it is.)
       if (cut > 0 || best.bridge) continue;
