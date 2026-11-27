@@ -395,8 +395,9 @@ export class TunnelSet {
     const version = this.vector.tunnelVersion;
     if (version === this.impliedSeen && !this.impliedAsked.size && !this.impliedMore) return;
     let kept = false;
-    // Those asked for: done, or still waiting.
-    for (const [key, { run, g }] of this.impliedAsked) {
+    // Those asked for: done, or still waiting (asked again: a list is sampled once its tiles are in when asked for).
+    for (const [key, { run }] of this.impliedAsked) {
+      const g = this.ground.list(`i|${key}`, () => ({ lonlat: impliedPoints(run) }));
       if (g.state === 'tiles') continue;
       this.impliedAsked.delete(key);
       this.ground.lists.delete(g.key);
@@ -422,14 +423,15 @@ export class TunnelSet {
     }
     if (version !== this.impliedSeen) {
       for (const key of this.implied.keys()) if (!live.has(key)) this.implied.delete(key);
-      for (const [key, { g }] of this.impliedAsked) if (!live.has(key)) { this.impliedAsked.delete(key); this.ground.lists.delete(g.key); }
+      for (const key of this.impliedAsked.keys()) if (!live.has(key)) { this.impliedAsked.delete(key); this.ground.lists.delete(`i|${key}`); }
       this.impliedSeen = version;
     }
     fresh.sort((a, b) => a.d - b.d);
     let started = 0;
     for (const { key, run } of fresh) {
       if (this.impliedAsked.size >= IMPLIED_BATCH) break;
-      this.impliedAsked.set(key, { run, g: this.ground.list(`i|${key}`, () => ({ lonlat: impliedPoints(run) })) });
+      this.ground.list(`i|${key}`, () => ({ lonlat: impliedPoints(run) }));
+      this.impliedAsked.set(key, { run });
       started++;
     }
     this.impliedMore = fresh.length > started;
