@@ -106,10 +106,11 @@ const LEAST_ROOF = SHELL_THINNEST + OVER_SHELL;
  * metres out on each side) stands OVER_LEAST of the tube's height or more over the floor (a street crossing the road
  * in front on the level does not), crossing at SIN_LEAST (30°) or more. Where its level width reaches out past the
  * portal as mapped (and lies no more than COLLAR_GAP out of it), the tube runs on under it to COLLAR_PAST beyond that
- * (its collar), COLLAR_MOST at most; and it is held at least PIN_COVER over the tube's top where it crosses, over the
+ * (its collar), COLLAR_MOST at most; and it is held at least as high as the ground the tube was fitted under (its
+ * concrete and OVER_SHELL of soil: a railway's embankment over it is that high already) where it crosses, over the
  * stretch of its line over the tube's width and HOLD_PAST more either way (shape.c's floors, vector/portals.js). */
 const SHOULDERS = [3, 6, 9, 12], OVER_LEAST = 0.5, SIN_LEAST = 0.5;
-const COLLAR_GAP = 2, COLLAR_PAST = 0.5, COLLAR_MOST = 12, PIN_COVER = 0.3, HOLD_PAST = 1;
+const COLLAR_GAP = 2, COLLAR_PAST = 0.5, COLLAR_MOST = 12, HOLD_PAST = 1;
 const PATHS = new Set(['path', 'footway', 'steps', 'track', 'trail', 'via_ferrata', 'cycleway']);
 
 /**
@@ -580,7 +581,7 @@ function portalFit(tube, e, floorAt, sec, slope, collarWidth, pts, heights, spin
   for (const [d, lat, w] of curve) if (d <= depth) { wide = Math.min(wide, w); slack = Math.max(slack, Math.abs(lat - 0.5 * bend * d * d)); }
   const opening = { from: 0, depth, bend, slack, rise: slope, offset: way.offset, outline: outlineAt(sec, wide) };
   const { collar, over } = crossingsOver(tube, e, pts, heights, sideOf(outline) + collarWidth, outline,
-    (d) => (d < 0 ? floorOut - slope * d : floorAt(sAt(Math.min(d, L)))), crown + collarWidth + PIN_COVER);
+    (d) => (d < 0 ? floorOut - slope * d : floorAt(sAt(Math.min(d, L)))), crown + collarWidth + OVER_SHELL);
   return { face, collar, shell, rise: slope, offset: way.offset, outline, opening, over };
 }
 

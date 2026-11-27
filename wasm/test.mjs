@@ -2207,8 +2207,9 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
         railFit.section && !railFit.section.arch && railFit.cover > 4.5 && railFit.ends[0].start === 0 && railFit.ends[1].start === 0)) problems.push(underLine);
   // (5.18n) A road crossing square over a 40 m road tunnel's east end, its line 2 m inside the end (3 m either side
   // held level: 1 m of it out past the portal), on ground 6 m over the floor: the tube runs on 1.5 m out under it (to
-  // half a metre past its level width), and it is held 0.3 m over the tube's top over the tube's width and a metre
-  // more either way (vector/portals.js: the road out of the tube pinned where the tube ends, its 1.5 m in the tube left
+  // half a metre past its level width), and it is held as high as the ground the tube was fitted under (its concrete
+  // and 0.2 m of soil) over the tube's width and a metre more either way (vector/portals.js: the road out of the tube
+  // pinned where the tube ends, its 1.5 m in the tube left
   // out, the crossing road's floor pin on its line at the crossing). A street crossing there on the level (the ground
   // beside the tube 0.2 m over the floor) is not over it.
   const { crossingOf } = await import('../js/engine/tunnels/fit.js');
@@ -2218,7 +2219,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const crossFit = fitOn(crossTube, () => 6, true, () => 500, [[], [overWay]]);
   const streetFit = fitOn(crossTube, (x, y) => (Math.abs(y) > 6 ? 0.2 : 6), true, () => 500, [[], [overWay]]);
   const cf = crossFit.ends[1], cw = crossFit.section ? outlineAt(crossFit.section) : null;
-  const wallOut = cw ? cw.half + crossFit.collarWidth : 0, topOver = cw ? 500 + cw.crown + crossFit.collarWidth + 0.3 : 0;
+  const wallOut = cw ? cw.half + crossFit.collarWidth : 0, topOver = cw ? 500 + cw.crown + crossFit.collarWidth + 0.2 : 0;
   const cross = crossingOf(crossTube, 1, overWay, wallOut);
   const n14c = 2 ** 14, mercXc = (lon) => (lon + 180) / 360, mercYc = (lat) => 0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI);
   const tileC = { z: 14, x: Math.floor(mercXc(8.6) * n14c), y: Math.floor(mercYc(46.5) * n14c), extent: 4096, mpu: 0.41 };
