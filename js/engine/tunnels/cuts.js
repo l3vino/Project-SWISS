@@ -37,8 +37,10 @@ import { POINT_DOUBLES, MESH_END } from './mesh.js';
  * half-width between the walkways. */
 export const CUT_DOUBLES = 9;
 /* Metres the cut of what is built runs on beyond a portal's collar (tunnels.js roomAt: the controllers leave the
- * solids alone there too). */
-export const CUT_PAST = 1;
+ * solids alone there too), and the terrain's (5.18p: past the step a line of ground ending square there makes, over
+ * shape.c's END_SHARP: by a box starting 0.1 m in from its portal, the ground filled in over it stood across its mouth
+ * from 0 to 0.1 m, seen from both sides). */
+export const CUT_PAST = 1, MOUTH_PAST = 0.4;
 /* Floats a segment in a tile's frame (bore.wgsl and buildings.wgsl Cut): its ends at the floor and their
  * half-widths, then each end's outline (top, archY, archA, archH), then the floor's half-width between the walkways
  * at each end, the walkways' height and the arch's lower half-height (outlineAt inner, kerb, lowR). A negative top:
@@ -88,18 +90,18 @@ export function boreCut(mp, sec, ends, coverAt = null) {
     flags.push(flag);
   };
   const middle = (k) => middleOf(p, n, k);
-  // Out of a portal: along its way out to the collar and CUT_PAST on, the floor rising as the approach does. Where the
-  // tube runs on out of its portal (its collar, under a way crossing over its mouth: fit.js), the terrain's bore runs on
-  // to the collar, a point of its own, kept (5.18o: it stopped at the portal as mapped, and the ground stood in the
-  // tube's last 4 m by the Ceneri north portal, seen through the mouth and walked through). `first`: end 0's (the points
-  // run from it in).
+  // Out of a portal: along its way out to the collar and CUT_PAST on, the floor rising as the approach does. The
+  // terrain's bore runs on to MOUTH_PAST past the collar, a point of its own, kept (5.18o: it stopped at the portal as
+  // mapped, and where the tube runs on out of it under a way crossing over its mouth, fit.js, the ground stood in the
+  // tube's last 4 m by the Ceneri north portal, seen through the mouth and walked through; 5.18p: and past the mouth,
+  // over the step the ground filled in over a short tube ends in). `first`: end 0's (the points run from it in).
   const beyond = (k, end, first) => {
     if (end.type !== MESH_END.PORTAL) return;
     const o = k * POINT_DOUBLES, [lon, lat] = middle(k), collar = Math.max(0, end.collar ?? 0);
     const at = (d, flag) => put(lon + (end.dirX * d) / metresLon(lat), lat + (end.dirY * d) / M_LAT, p[o + 2] + (end.rise ?? 0) * d, p[o + 8], flag);
-    if (!first && collar > 0) at(collar, FLAG_END);
+    if (!first) at(collar + MOUTH_PAST, FLAG_END);
     at(collar + CUT_PAST, FLAG_BEYOND);
-    if (first && collar > 0) at(collar, FLAG_END);
+    if (first) at(collar + MOUTH_PAST, FLAG_END);
   };
   // A portal's first piece: END_PIECE in from its middle along its line's first stretch, its floor and width as the
   // mesh has them there.

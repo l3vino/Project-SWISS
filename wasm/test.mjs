@@ -2625,6 +2625,8 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
       let a = i, b = j;
       const step = j > i ? 1 : -1;
       while (c.flags[a] & 2) { a += step; b += step; }
+      // (Past the terrain's own point MOUTH_PAST out of the portal, 5.18p: the first piece in from the portal.)
+      a += step; b += step;
       const pa = c.points.subarray(a * 9, a * 9 + 3), pb = c.points.subarray(b * 9, b * 9 + 3);
       const e = new Float64Array(3), nn = new Float64Array(3), u = new Float64Array(3);
       enuBasis(LON, LAT, e, nn, u);
@@ -2661,8 +2663,9 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     if (!(Math.abs(meshWay - 5) < 0.05 && Math.abs(meshStep - 0.05) < 1e-6 && Math.abs(pastLong - 0.05) < 0.002 && Math.abs(pastWay - 5) < 0.2 && Math.abs(pieceWay - 5) < 0.2)) problems.push(faceLine);
   }
   // (5.18o) A tube running on 3 m out of its north portal (its collar, under a way crossing over its mouth: fit.js): the
-  // terrain's bore runs on to the collar, a point of its own (it stopped at the portal as mapped, and the ground stood in
-  // the tube's last metres), what is built a metre past it.
+  // terrain's bore runs on past the collar, a point of its own (it stopped at the portal as mapped, and the ground stood
+  // in the tube's last metres), 0.4 m past it (5.18p: over the step a line of ground ending square at a mouth makes),
+  // what is built a metre past it.
   let collarLine = '';
   {
     const { ecefToGeodetic } = await import('../js/core/math.js');
@@ -2672,7 +2675,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     const north = (i) => { const q = ecefToGeodetic([c.points[i * 9], c.points[i * 9 + 1], c.points[i * 9 + 2]]); return [(q.lat - LAT) * my - 40, q.height - 500]; };
     const [lastOut, lastUp] = north(c.count - 1), [terrainOut, terrainUp] = north(c.count - 2);
     collarLine = `a tube running on 3 m out of its portal: the terrain's bore to ${terrainOut.toFixed(2)} m out (${terrainUp.toFixed(2)} m up), what is built to ${lastOut.toFixed(2)} m`;
-    if (!(c.flags[c.count - 1] & 2) || c.flags[c.count - 2] & 2 || Math.abs(terrainOut - 3) > 0.01 || Math.abs(terrainUp - 0.06) > 0.005 || Math.abs(lastOut - 4) > 0.01) problems.push(collarLine);
+    if (!(c.flags[c.count - 1] & 2) || c.flags[c.count - 2] & 2 || Math.abs(terrainOut - 3.4) > 0.01 || Math.abs(terrainUp - 0.068) > 0.005 || Math.abs(lastOut - 4) > 0.01) problems.push(collarLine);
   }
   console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine}; ${endLine}; ${faceLine}; ${collarLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
