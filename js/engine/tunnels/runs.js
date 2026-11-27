@@ -43,7 +43,7 @@ const OVER_NEAR = 20;
  * within IMPLIED_MERGE metres of each other's level widths along it one stretch, run on IMPLIED_PAST either side along
  * its open line (IMPLIED_LEAST at least); its ground read at each crossing and IMPLIED_SIDES metres past the stretch on
  * either side. Cells of IMPLIED_CELL tile units the crossings are looked for in. */
-const IMPLIED_SIN = 0.5, JUNCTION_NEAR = 2, IMPLIED_MERGE = 10, IMPLIED_PAST = 15, IMPLIED_LEAST = 8;
+const IMPLIED_SIN = 0.5, JUNCTION_NEAR = 2, IMPLIED_MERGE = 10, IMPLIED_PAST = 4, IMPLIED_LEAST = 8;
 const IMPLIED_SIDES = [2, 6, 10, 15, 20], IMPLIED_CELL = 64;
 
 /* An implied run is kept (impliedHolds) where the bare ground at its crossings stands IMPLIED_OVER over the line between
