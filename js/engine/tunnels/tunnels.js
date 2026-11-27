@@ -84,8 +84,9 @@ const APPROACH_MATCH = 3;
  * lines comes out of one mouth; within the cells #approachIndex looks in). */
 const OVER_MATCH = 7;
 /* The implied runs' ground lists read at once (#impliedProbes, 5.18p: a tile has a few dozen crossings with no shared
- * point; the lists of the tubes themselves are not to be pushed out). */
-const IMPLIED_BATCH = 12;
+ * point; the lists of the tubes themselves are not to be pushed out), and metres from the camera they are read within
+ * (the detail tiles round Bellinzona had 194, the nearest read first: the rest as the camera comes near). */
+const IMPLIED_BATCH = 12, IMPLIED_NEAR = 1500;
 /* The road in front of a portal: the ground NEAR, each taken back to the portal along the line through the ground
  * to RISE_REACH metres out (its rise out of the portal), their median (a portal mapped a little inside the hillside
  * has its face in the first metres out: under half of them); unless that is NEAR_OVER over the approach's line at
@@ -392,8 +393,11 @@ export class TunnelSet {
    * the ground at each one's crossings and either side read once, IMPLIED_BATCH lists at a time, the nearest the camera
    * first; one whose ground shows its way passing under (runs.js impliedHolds) is kept, and the tubes are made again. */
   #impliedProbes(now) {
-    const version = this.vector.tunnelVersion;
-    if (version === this.impliedSeen && !this.impliedAsked.size && !this.impliedMore) return;
+    const version = this.vector.tunnelVersion, eye = this.impliedEye ??= [NaN, NaN];
+    // (Looked through again when the tiles change, while some are asked for or still to be, or the camera moved on.)
+    const moved = !(Math.hypot((eye[0] - this.eye.lon) * 77000, (eye[1] - this.eye.lat) * 111132) < IMPLIED_NEAR / 8);
+    if (version === this.impliedSeen && !this.impliedAsked.size && !this.impliedMore && !moved) return;
+    if (moved) { eye[0] = this.eye.lon; eye[1] = this.eye.lat; }
     let kept = false;
     // Those asked for: done, or still waiting (asked again: a list is sampled once its tiles are in when asked for).
     for (const [key, { run }] of this.impliedAsked) {
@@ -417,8 +421,8 @@ export class TunnelSet {
         const key = impliedKey(run);
         live.add(key);
         if (this.implied.has(key) || this.impliedAsked.has(key)) continue;
-        const p = run.implied.probe;
-        fresh.push({ key, run, d: Math.hypot((p[0] - this.eye.lon) * m, (p[1] - this.eye.lat) * 111132) });
+        const p = run.implied.probe, d = Math.hypot((p[0] - this.eye.lon) * m, (p[1] - this.eye.lat) * 111132);
+        if (d <= IMPLIED_NEAR) fresh.push({ key, run, d });
       }
     }
     if (version !== this.impliedSeen) {
