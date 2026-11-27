@@ -21,7 +21,10 @@
  * the portal (portals.js: the block's `widen`; the segments there are cut
  * into stretches, each with its half-width), and a short apron runs
  * straight out of the portal as wide (the block's `aprons`: pieces of their
- * own lines, pinned at the portal).
+ * own lines, pinned at the portal). Where a tube runs on out of its portal
+ * under a way crossing over its mouth (5.18n), the road's metres in it are
+ * left out (the block's `inside`), and the crossing way is pinned over the
+ * tube's top (a floor pin, side 4: shape.c).
  *
  * A railway's track (track.c) runs on over a bridge's deck where the deck is
  * known (the block's `decks`: bridges.js deckProfile, the deck's top along
@@ -37,7 +40,7 @@
 
 import { BLOCK, segmentArcs } from '../../formats/vector-tile.js';
 import { PIN_FLOATS } from './bridges.js';
-import { WIDEN_FLOATS, WIDEN_FULL, WIDEN_TO, APRON_FLOATS } from './portals.js';
+import { WIDEN_FLOATS, WIDEN_FULL, WIDEN_TO, APRON_FLOATS, INSIDE_FLOATS } from './portals.js';
 
 export const PIECE_FLOATS = 10;
 /* A piece of a railway's track (wasm/src/track.c TrackPiece, 5.18b): its ends in the tile's quantized units, the
@@ -140,18 +143,25 @@ export function piecesFor(blocks, rect, kinds, widths, out = { data: new Float32
             if (f1 - f0 <= 1e-4) continue;
           }
           for (let q = 0; q < own.length; q += 2) {
-            const g0 = Math.max(f0, own[q]), g1 = Math.min(f1, own[q + 1]);
-            if (g1 - g0 <= 1e-6) continue;
-            // The railway's track over it (5.18b: track.c builds it on the ground cut here), the whole stretch at once,
-            // and its line's given profile (5.18d) with the pieces.
-            if (tracks && kind.gauge > 0) pushTrack(tracks, c, g0, g1, a0, span, kind, id, NaN, NaN);
-            if (given && kind.gauge > 0 && given.has(line)) profiled.add(line);
-            // In front of a tunnel's portal, stretches at the widths its level cut takes (portals.js); else one.
-            const parts = b.widen && span > 1e-6 ? stretchesOf(b.widen, line, a0 + span * g0, a0 + span * g1, half, stretches) : null;
-            for (let r = 0, m = parts ? parts.length : 3; r < m; r += 3) {
-              const p0 = parts ? (parts[r] - a0) / span : g0, p1 = parts ? (parts[r + 1] - a0) / span : g1;
-              // (A piece ending at a tunnel's portal ends square there: shape.c, by the portal's pin on its line.)
-              pushPiece(out, c, p0, p1, a0, span, parts ? parts[r + 2] : half, kind, id);
+            const own0 = Math.max(f0, own[q]), own1 = Math.min(f1, own[q + 1]);
+            if (own1 - own0 <= 1e-6) continue;
+            // (Where a tube runs on out of its portal under a way crossing over its mouth, the road's first metres are in
+            // the tube, not on the ground: portals.js `inside`, 5.18n.)
+            const open = b.inside && span > 1e-6 ? outsideOf(b.inside, line, a0 + span * own0, a0 + span * own1, opens) : null;
+            for (let j = 0, mj = open ? open.length : 2; j < mj; j += 2) {
+              const g0 = open ? (open[j] - a0) / span : own0, g1 = open ? (open[j + 1] - a0) / span : own1;
+              if (g1 - g0 <= 1e-6) continue;
+              // The railway's track over it (5.18b: track.c builds it on the ground cut here), the whole stretch at once,
+              // and its line's given profile (5.18d) with the pieces.
+              if (tracks && kind.gauge > 0) pushTrack(tracks, c, g0, g1, a0, span, kind, id, NaN, NaN);
+              if (given && kind.gauge > 0 && given.has(line)) profiled.add(line);
+              // In front of a tunnel's portal, stretches at the widths its level cut takes (portals.js); else one.
+              const parts = b.widen && span > 1e-6 ? stretchesOf(b.widen, line, a0 + span * g0, a0 + span * g1, half, stretches) : null;
+              for (let r = 0, m = parts ? parts.length : 3; r < m; r += 3) {
+                const p0 = parts ? (parts[r] - a0) / span : g0, p1 = parts ? (parts[r + 1] - a0) / span : g1;
+                // (A piece ending at a tunnel's portal ends square there: shape.c, by the portal's pin on its line.)
+                pushPiece(out, c, p0, p1, a0, span, parts ? parts[r + 2] : half, kind, id);
+              }
             }
           }
         }
@@ -333,9 +343,36 @@ function cutAt(ts, n, t) {
   return n;
 }
 
-/* A segment's stretches in front of a tunnel's portal (scratch: [s from, s to, half-width, …]). */
+/* A segment's stretches in front of a tunnel's portal (scratch: [s from, s to, half-width, …]), and its stretches on
+ * the ground (scratch: [s from, s to, …]). */
 const stretches = [];
 const cutsScratch = [];
+const opens = [];
+
+/**
+ * The stretches of a segment from sA to sB along its line (metres) outside the tubes that run on out of their portals
+ * over it (portals.js `inside`: line, s from, s to at INSIDE_FLOATS each): [s from, s to, …] in `out` (none: all of it
+ * inside); null where none reaches it.
+ */
+function outsideOf(inside, line, sA, sB, out) {
+  out.length = 0;
+  out.push(sA, sB);
+  let hit = false;
+  for (let k = 0; k + INSIDE_FLOATS <= inside.length; k += INSIDE_FLOATS) {
+    const lo = inside[k + 1], hi = inside[k + 2];
+    if (inside[k] !== line || hi <= sA || lo >= sB) continue;
+    hit = true;
+    for (let i = out.length - 2; i >= 0; i -= 2) {
+      const a = out[i], b = out[i + 1];
+      if (hi <= a || lo >= b) continue;
+      const keep = [];
+      if (lo > a) keep.push(a, lo);
+      if (hi < b) keep.push(hi, b);
+      out.splice(i, 2, ...keep);
+    }
+  }
+  return hit ? out : null;
+}
 /* Steps the widening narrows back to the road's own width in, over WIDEN_FULL..WIDEN_TO metres out. */
 const TAPER_STEPS = 4;
 

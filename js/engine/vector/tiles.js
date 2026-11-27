@@ -670,13 +670,14 @@ export class VectorTiles {
       const was = t.portalStamp ?? 0;
       const b = t.cpu.block, head = new Uint32Array(b.buffer, b.byteOffset, BLOCK.HEADER_BYTES / 4);
       const mpu = new Float32Array(b.buffer, b.byteOffset, BLOCK.HEADER_BYTES / 4)[BLOCK.metresPerUnit];
-      const { pins, widen, aprons, sig } = portalPinsFor(t.tunnels, this.portalFloors,
+      const { pins, widen, aprons, inside, sig } = portalPinsFor(t.tunnels, this.portalFloors,
         { z: t.z, x: t.x, y: t.y, extent: head[BLOCK.extent], mpu });
       t.portalPins = pins;
       t.portalStamp = sig;
       t.cpu.pins = joinPins(t.deckPins ?? null, pins);
       t.cpu.widen = widen;
       t.cpu.aprons = aprons;
+      t.cpu.inside = inside;   // (the roads' first metres inside a tube that runs on out of its portal: 5.18n)
       if (sig !== was && this.#restamp(t)) this.version++;
     }
   }

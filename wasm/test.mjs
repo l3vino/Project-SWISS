@@ -1294,6 +1294,17 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const atPortal = along(portal, 0) - deep, deckLeft = along(deck, 0) - along(after, 0);
   if (!(Math.abs(atPortal) < 0.05)) problems.push(`the road is ${atPortal.toFixed(2)} m off a portal's floor 7 m under it`);
   if (!(Math.abs(deckLeft) < 0.05)) problems.push(`a deck 7 m under the road moved it ${deckLeft.toFixed(2)} m`);
+  // (a4b) A floor (5.18n: a way crossing over a tunnel's tube, side 4, its grade field its hold) 3 m over the road's own
+  // height at its middle, held 5 m either way: the road at it there and 4 m off, its own again past the hold and the
+  // longest ramp (5 + 40 m); one 2 m under the road moves nothing (a floor only lifts).
+  const floorPin = (dz) => shapeOf(hillBytes.slice(), hrect, new Float32Array([...road, Qm / 2, Qm / 2, Qm / 2, Qm / 2, sMid, along(after, 0) + dz, 4, 5, -1, 0]));
+  const lifted = floorPin(3), lowFloor = floorPin(-2);
+  const atFloor = Math.max(...[-4, 0, 4].map((ds) => Math.abs(along(lifted, ds) - (along(after, 0) + 3))));
+  const pastFloor = Math.abs(along(lifted, 47) - along(after, 47)), floorHalf = along(lifted, 25) - along(after, 25);
+  const underMoved = Math.max(...[-10, 0, 10].map((ds) => Math.abs(along(lowFloor, ds) - along(after, ds))));
+  if (!(atFloor < 0.05 && pastFloor < 0.05 && floorHalf > 0.3 && floorHalf < 2.8 && underMoved < 0.01))
+    problems.push(`a floor 3 m over the road: ${JSON.stringify({ atFloor, floorHalf, pastFloor, underMoved })}`);
+  const floorLine = `a floor 3 m up held to ${atFloor.toFixed(3)} m over its hold, ${floorHalf.toFixed(2)} m 25 m on, ${pastFloor.toFixed(3)} m 47 m on, one under the road moving it ${underMoved.toFixed(3)} m`;
   if (after.status !== 0) problems.push(`hillside status ${after.status}`);
   if (!(worstTilt < 0.01)) problems.push(`the road on the hillside tilts ${(worstTilt * 100).toFixed(1)}% across`);
   if (!(worstAlong < 0.5)) problems.push(`the road's middle moved ${worstAlong.toFixed(2)} m`);
@@ -1691,7 +1702,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   if (drawn.triangles !== g1.tc) problems.push(`physics stands on ${g1.tc} triangles, ${drawn.triangles} are drawn`);
   console.log(`terrain under roads: a 30% hillside's road ${(worstTilt * 100).toFixed(2)}% across (its middle within ${worstAlong.toFixed(2)} m), ` +
     `closed ${hillOpen.open ? `but for ${hillOpen.open} edges with corners on them (≤ ${hillOpen.step.toFixed(3)} m)` : 'everywhere'}, ` +
-    `${cutMarks} vertices marked cut and ${fillMarks} fill; a pin 2 m up held to ${atPin.toFixed(3)} m, ${halfWay.toFixed(2)} m 16 m on, ${farOff.toFixed(3)} m 45 m on; a portal 7 m under it held to ${atPortal.toFixed(3)} m, a deck as low left alone (${deckLeft.toFixed(3)} m); ` +
+    `${cutMarks} vertices marked cut and ${fillMarks} fill; a pin 2 m up held to ${atPin.toFixed(3)} m, ${halfWay.toFixed(2)} m 16 m on, ${farOff.toFixed(3)} m 45 m on; a portal 7 m under it held to ${atPortal.toFixed(3)} m, a deck as low left alone (${deckLeft.toFixed(3)} m); ${floorLine}; ` +
     `Göschenen ${out.count} pieces (${drawn.used} cut in), ` +
     `triangles ${g0.tc} → ${g1.tc}, ${steep} pieces over 10% across before, at most ${(worstAfter * 100).toFixed(1)}% after, closed ` +
     `${gOpen.open ? `but for ${gOpen.open} edges with corners on them (≤ ${gOpen.step.toFixed(3)} m)` : 'everywhere'}; ` +
@@ -2140,9 +2151,9 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     return { family, kind, length: L, points: pts, tracks: 1,
       ends: [{ type: TUBE_END.PORTAL, lon: 8.6, lat: 46.5, dirX: -1, dirY: 0 }, { type: far, lon: 8.6 + L / M, lat: 46.5, dirX: 1, dirY: 0 }] };
   };
-  const fitOn = (tube, ground, short = true, floorAt = () => 500) => {
+  const fitOn = (tube, ground, short = true, floorAt = () => 500, overs = null) => {
     const kind = kinds.find((k) => k?.id === tube.kind), sec = sectionFor(tube, kind, null);
-    const pts = fitPoints(tube, short, sec), heights = new Float64Array(pts.lonlat.length / 2);
+    const pts = fitPoints(tube, short, sec, overs), heights = new Float64Array(pts.lonlat.length / 2);
     for (let i = 0; i < heights.length; i++) heights[i] = 500 + ground((pts.lonlat[2 * i] - 8.6) * M, (pts.lonlat[2 * i + 1] - 46.5) * 111132);
     return fitTube({ tube, floorAt, section: sec, clearance: clearanceFor(tube, kind), kind, short, pts, heights });
   };
@@ -2194,6 +2205,41 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     `${railFit.section ? `a ${railFit.section.height.toFixed(1)} m box under ${railFit.cover.toFixed(2)} m from ${railFit.ends[0].start.toFixed(1)} to ${(40 - railFit.ends[1].start).toFixed(1)} m` : 'not built'} (on the bare ground ${bareFit.section ? 'built' : 'not built'})`;
   if (!(Math.abs(onLine - 505.8) < 1e-3 && Math.abs(off6 - (505.8 - 2.2 / 1.5)) < 1e-3 && off30 === -Infinity && !bareFit.section &&
         railFit.section && !railFit.section.arch && railFit.cover > 4.5 && railFit.ends[0].start === 0 && railFit.ends[1].start === 0)) problems.push(underLine);
+  // (5.18n) A road crossing square over a 40 m road tunnel's east end, its line 2 m inside the end (3 m either side
+  // held level: 1 m of it out past the portal), on ground 6 m over the floor: the tube runs on 1.5 m out under it (to
+  // half a metre past its level width), and it is held 0.3 m over the tube's top over the tube's width and a metre
+  // more either way (vector/portals.js: the road out of the tube pinned where the tube ends, its 1.5 m in the tube left
+  // out, the crossing road's floor pin on its line at the crossing). A street crossing there on the level (the ground
+  // beside the tube 0.2 m over the floor) is not over it.
+  const { crossingOf } = await import('../js/engine/tunnels/fit.js');
+  const { portalPinsFor, INSIDE_FLOATS } = await import('../js/engine/vector/portals.js');
+  const xo = 8.6 + 38 / M, overWay = { line: 5, kind: 0, half: 3, points: Float64Array.of(xo, 46.5 - 20 / 111132, 0, xo, 46.5 + 20 / 111132, 40) };
+  const crossTube = straight(40, 'minor');
+  const crossFit = fitOn(crossTube, () => 6, true, () => 500, [[], [overWay]]);
+  const streetFit = fitOn(crossTube, (x, y) => (Math.abs(y) > 6 ? 0.2 : 6), true, () => 500, [[], [overWay]]);
+  const cf = crossFit.ends[1], cw = crossFit.section ? outlineAt(crossFit.section) : null;
+  const wallOut = cw ? cw.half + crossFit.collarWidth : 0, topOver = cw ? 500 + cw.crown + crossFit.collarWidth + 0.3 : 0;
+  const cross = crossingOf(crossTube, 1, overWay, wallOut);
+  const n14c = 2 ** 14, mercXc = (lon) => (lon + 180) / 360, mercYc = (lat) => 0.5 - Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360)) / (2 * Math.PI);
+  const tileC = { z: 14, x: Math.floor(mercXc(8.6) * n14c), y: Math.floor(mercYc(46.5) * n14c), extent: 4096, mpu: 0.41 };
+  const unitsC = (lon, lat) => [(mercXc(lon) * n14c - tileC.x) * tileC.extent, (mercYc(lat) * n14c - tileC.y) * tileC.extent];
+  const [pxC, pyC] = unitsC(crossTube.ends[1].lon, 46.5);
+  const runC = { points: Float64Array.of(8.6, 46.5, crossTube.ends[1].lon, 46.5),
+    ends: [{ pin: null, over: null }, { pin: { x: pxC, y: pyC, s: 100, dir: 1, line: 3 }, over: [overWay] }] };
+  const floorC = { lon: crossTube.ends[1].lon, lat: 46.5, height: 500, rise: 0, half: wallOut, outX: 1, outY: 0, cut: 0, collar: cf?.collar ?? 0, over: cf?.over ?? null };
+  const pinsC = portalPinsFor([runC], [floorC], tileC), P = pinsC.pins ?? [];
+  const pinOf = (side) => { for (let k = 0; k + 7 <= P.length; k += 7) if (P[k + 6] === side) return [...P.slice(k, k + 7)]; return null; };
+  const roadPin = pinOf(2), floorPinC = pinOf(4);
+  const crossLine = `a road crossing over a box's end on level ground: the box runs on ${cf?.collar?.toFixed(2)} m, the road held at ` +
+    `${cf?.over?.[0]?.z.toFixed(2)} m (its top ${topOver.toFixed(2)}) over ${cf?.over?.[0]?.hold.toFixed(2)} m either way; ` +
+    `pinned on its line at ${floorPinC?.[2].toFixed(2)} m, the road out of the box at ${roadPin?.[2].toFixed(2)} m, ${pinsC.inside ? `${(pinsC.inside[2] - pinsC.inside[1]).toFixed(2)} m of it` : 'none'} in the box; ` +
+    `a street on the level ${streetFit.ends[1].collar ? 'under it' : 'not over it'}`;
+  if (!(cross && Math.abs(cross.dOut + 1) < 0.01 && Math.abs(cross.dIn - 5) < 0.01 && Math.abs(cross.sin - 1) < 1e-6 &&
+        Math.abs(cf?.collar - 1.5) < 0.01 && cf?.start === 0 && cf?.over?.length === 1 && Math.abs(cf.over[0].z - topOver) < 0.01 &&
+        Math.abs(cf.over[0].hold - (wallOut + 1)) < 0.05 && roadPin && Math.abs(roadPin[2] - 101.5) < 0.01 && Math.abs(roadPin[3] - 499.95) < 0.01 &&
+        floorPinC && Math.abs(floorPinC[2] - 20) < 0.05 && floorPinC[5] === 5 && Math.abs(floorPinC[3] - topOver) < 0.01 &&
+        pinsC.inside?.length === INSIDE_FLOATS && pinsC.inside[0] === 3 && Math.abs(pinsC.inside[1] - 100) < 1e-3 && Math.abs(pinsC.inside[2] - 101.5) < 1e-3 &&
+        streetFit.section && !streetFit.ends[1].collar && !streetFit.ends[1].over)) problems.push(crossLine);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).
@@ -2236,7 +2282,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const fitLine = `fit: underpass a ${under.section?.height.toFixed(1)} m box from ${u0?.start} and ${u1?.start} m in (collar ${u0?.collar}), its concrete ${under.collarWidth?.toFixed(2)} m thick; ` +
     `no room: ${none.section ? 'built' : 'not built'}; hillside face ${h0?.face} m in, the tube from ${h0?.start?.toFixed(2)} m in, its outer side ${h0?.shell} m (the hill falling away to its right: ${f0?.shell} m); 3 m of ground over a 60 m one: ${flat.section ? `a ${flat.section.height.toFixed(1)} m box` : 'not built'}, 2.7 m: ${low.section ? 'built' : 'not built'}, a path under 2.6 m: ${pathUnder.section ? `a ${pathUnder.section.height.toFixed(1)} m box` : 'not built'}; ` +
     `under a valley the floor dips ${dip.floor.dipped.toFixed(1)} m (vault ≥ ${worstCover.toFixed(2)} m under the ground, ≤ ${(worstGrade * 100).toFixed(2)}%); ` +
-    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}`;
+    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}; ${crossLine}`;
   console.log(`tunnels: stand-in ${rail.length} railway tube, ${t0?.tracks} tracks, ${t0?.length.toFixed(0)} m, ends ${t0?.ends.map((e) => e.type).join('/')}; ` +
     `Göschenen ${gRuns.length} runs → ${gTubes.length} tubes; ${meshLine}; ${fitLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;

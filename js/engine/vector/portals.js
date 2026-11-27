@@ -41,6 +41,17 @@
  * tunnel is finished"). The terrain
  * itself is cut along the tunnel's bore (tunnels/cuts.js, terrain.wgsl),
  * from its mouth in.
+ *
+ * Where a way crosses over a tube by its portal (5.18n: tunnels/fit.js, from
+ * the ways runs.js finds there), the tube may run on out of the portal under
+ * it (its `collar`): the road out of it is pinned where the tube ends, and its
+ * first metres, in the tube, are not cut into the ground (the block's
+ * `inside`; pieces.js leaves them out), so the crossing way's level holds the
+ * ground over the tube alone. And the crossing way is held at least over the
+ * tube's top where it crosses (a floor pin, side 4: shape.c), the bare ground
+ * under it having the tube's cut (his words on 5.18n: "the terrain is messed
+ * up and roads are not really aligned": a road over an underpass's mouth by
+ * the Ceneri north portal dipped 5.6 m into it).
  */
 
 import { PIN_FLOATS, PIN_BELOW } from './bridges.js';
@@ -63,6 +74,11 @@ export const APRON_FLOATS = 10;
 /* Floats a point of a portal's open cutting (tunnels.js cuttingOf): lon, lat, floor, metres in, the floor's rise; and
  * metres beyond its width a tile still lays it (shape.c's faces beside it reach about as far). */
 const CUTTING_FLOATS = 5, CUTTING_MARGIN = 40;
+/* Floats a stretch of a line inside a tube (the block's `inside`, pieces.js): its line, the metres along it where it
+ * starts and ends. A floor pin's side (shape.c FLOOR_SIDE), and metres a crossing (fit.js) may lie off a way's line
+ * and be on it. */
+export const INSIDE_FLOATS = 3;
+const FLOOR_PIN = 4, ON_WAY = 1.5;
 
 /** The height the road in front of a portal is pinned to `d` metres out of it: a hair under its floor, at its rise. */
 export function pinnedRoadAt(floor, rise, d) {
@@ -85,21 +101,25 @@ export const PORTAL_NEAR = 200;
 /** A portal's floor as a string, for telling which changed (every field the pins are made from). */
 export function floorKey(q) {
   return `${q.lon.toFixed(6)},${q.lat.toFixed(6)},${q.height.toFixed(2)},${q.rise.toFixed(3)},${q.half.toFixed(2)},${q.outX.toFixed(3)},${q.outY.toFixed(3)},` +
-    `${q.cutting ? q.cutting.length + ':' + q.cutting[q.cutting.length - 2].toFixed(1) : 0},${q.cut.toFixed(1)},${q.bridge ? 1 : 0}`;
+    `${q.cutting ? q.cutting.length + ':' + q.cutting[q.cutting.length - 2].toFixed(1) : 0},${q.cut.toFixed(1)},${q.bridge ? 1 : 0},` +
+    `${(q.collar ?? 0).toFixed(2)},${(q.over ?? []).map((c) => `${c.lon.toFixed(6)}/${c.lat.toFixed(6)}/${c.hold.toFixed(1)}/${c.z.toFixed(2)}`).join(';')}`;
 }
 
 /**
  * The pins of a detail tile's tunnel portals, their roads' widenings and their aprons, from the floors placed now:
  * { pins: Float32Array (PIN_FLOATS each) or null, widen: Float32Array (WIDEN_FLOATS each) or null, aprons:
- * Float32Array (APRON_FLOATS each) or null, sig: a number that changes when they do (0 none) }.
- * @param runs    the tile's tunnel runs (tunnels/runs.js), each end with its `pin`
- * @param floors  [{ lon, lat, height, rise, half, outX, outY }] (tunnels.js: each placed portal's floor, its rise a
- *                metre out, the tunnel's half-width there to its walls' outer faces, its way out east and north)
+ * Float32Array (APRON_FLOATS each) or null, inside: Float32Array (INSIDE_FLOATS each) or null, sig: a number that
+ * changes when they do (0 none) }.
+ * @param runs    the tile's tunnel runs (tunnels/runs.js), each end with its `pin` and the ways `over` it
+ * @param floors  [{ lon, lat, height, rise, half, outX, outY, collar, over }] (tunnels.js: each placed portal's floor,
+ *                its rise a metre out, the tunnel's half-width there to its walls' outer faces, its way out east and
+ *                north, metres its tube runs on out of it, and the ways crossing over it to hold: [{ lon, lat, hold,
+ *                z }], fit.js)
  * @param tile    the block's tile { z, x, y, extent, mpu (metres a unit) }: its units, and which portals are its own
  */
 export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0, mpu: 1 }) {
-  if (!floors.length) return { pins: null, widen: null, aprons: null, sig: 0 };
-  const out = [], widen = [], aprons = [], aproned = new Set(), mpu = tile.mpu || 1;
+  if (!floors.length) return { pins: null, widen: null, aprons: null, inside: null, sig: 0 };
+  const out = [], widen = [], aprons = [], inside = [], aproned = new Set(), held = new Set(), mpu = tile.mpu || 1;
   let h = 2166136261, own = 0;
   // A portal's apron: straight out of it (the block's y runs south), a line of its own (from the top of the block's
   // line numbers down), pinned at the portal.
@@ -129,6 +149,29 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
     }
     return false;
   };
+  // A way crossing over a portal's tube (fit.js: { lon, lat, hold, z }) held at least at z over `hold` metres of its
+  // line either way of that point (a floor pin: shape.c): on the one of this block's ways over the portal (runs.js
+  // `over`) passing within ON_WAY of it, at the metres along it there; once a way and place.
+  const holdOver = (c, ways) => {
+    if (!ways) return;
+    const m = 111320 * Math.cos((c.lat * Math.PI) / 180);
+    let way = null, s = 0, best = ON_WAY;
+    for (const w of ways) {
+      const p = w.points;
+      for (let i = 0; i + 5 < p.length; i += 3) {
+        const ax = (c.lon - p[i]) * m, ay = (c.lat - p[i + 1]) * 111132, ux = (p[i + 3] - p[i]) * m, uy = (p[i + 4] - p[i + 1]) * 111132;
+        const L2 = ux * ux + uy * uy, f = L2 > 0 ? Math.max(0, Math.min(1, (ax * ux + ay * uy) / L2)) : 0;
+        const d = Math.hypot(ax - ux * f, ay - uy * f);
+        if (d < best) { best = d; way = w; s = p[i + 2] + (p[i + 5] - p[i + 2]) * f; }
+      }
+    }
+    if (!way || held.has(`${way.line}|${Math.round(s * 2)}`)) return;
+    held.add(`${way.line}|${Math.round(s * 2)}`);
+    const [x, y] = unitsOf(c.lon, c.lat);
+    out.push(x, y, s, c.z, c.hold, way.line, FLOOR_PIN);
+    h = Math.imul(h ^ (way.line * 131 + Math.round(s * 2)), 16777619);
+    h = Math.imul(h ^ Math.round(c.z * 10 + c.hold * 1000), 16777619);
+  };
   for (const run of runs ?? []) {
     for (let e = 0; e < 2; e++) {
       const pin = run.ends[e].pin;
@@ -148,19 +191,24 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
       const rise = Math.max(-RISE_MOST, Math.min(RISE_MOST, best.rise));
       // Out of a portal with a cutting (5.17t: tunnel.c `cutting`, its walls holding the ground and the terrain left out
       // inside it), pinned where it ends, straight out, and no widening, apron or open cutting of its own (their
-      // faces were the striped curtains beside the tracks, his "the terrain things ... are infuriating").
-      const cut = best.cut > 0 ? best.cut : 0;
-      const z = pinnedRoadAt(best.height, best.rise, cut);
-      out.push(pin.x + ((best.outX ?? 0) * cut) / mpu, pin.y - ((best.outY ?? 0) * cut) / mpu, pin.s + pin.dir * cut, z, pin.dir * rise, pin.line, 2 * pin.dir);
-      h = Math.imul(h ^ (pin.line * 31 + Math.round(pin.s * 2)), 16777619);
+      // faces were the striped curtains beside the tracks, his "the terrain things ... are infuriating"). Out of one
+      // whose tube runs on under a way crossing over its mouth (5.18n), pinned where the tube ends, the road's metres up
+      // to there in the tube (`inside`).
+      const cut = best.cut > 0 ? best.cut : 0, collar = cut > 0 ? 0 : Math.max(0, best.collar ?? 0), off = cut + collar;
+      const z = pinnedRoadAt(best.height, best.rise, off);
+      const px = pin.x + ((best.outX ?? 0) * off) / mpu, py = pin.y - ((best.outY ?? 0) * off) / mpu, ps = pin.s + pin.dir * off;
+      out.push(px, py, ps, z, pin.dir * rise, pin.line, 2 * pin.dir);
+      h = Math.imul(h ^ (pin.line * 31 + Math.round(ps * 2)), 16777619);
       h = Math.imul(h ^ Math.round(z * 10), 16777619);
+      if (collar > 0) inside.push(pin.line, Math.min(pin.s, ps), Math.max(pin.s, ps));
+      if (best.over) for (const c of best.over) holdOver(c, run.ends[e].over);
       if (cut > 0) { aproned.add(best); continue; }
       // (Onto a bridge, 5.17x: the deck carries the way out of the portal, the ground under it is left as it is.)
       if (best.bridge) { aproned.add(best); continue; }
       if (!(best.half > 0) || gap > SAME_PORTAL) continue;
-      widen.push(pin.line, pin.s, pin.dir, best.half + WIDEN_MARGIN);
+      widen.push(pin.line, ps, pin.dir, best.half + WIDEN_MARGIN);
       h = Math.imul(h ^ Math.round(best.half * 10), 16777619);
-      apron(pin.x, pin.y, best, z, rise);
+      apron(px, py, best, z, rise);
     }
   }
   // The portals in this tile whose road does not run on out of them as a line (none mapped, or one stopping short
@@ -170,8 +218,10 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
     if (aproned.has(f) || f.cut > 0 || f.bridge) continue;
     const xy = mine(f);
     if (!xy) continue;
-    const z = pinnedRoadAt(f.height, f.rise, 0), rise = Math.max(-RISE_MOST, Math.min(RISE_MOST, f.rise));
-    apron(xy[0], xy[1], f, z, rise);
+    // (From where its tube ends: 5.18n.)
+    const collar = Math.max(0, f.collar ?? 0);
+    const z = pinnedRoadAt(f.height, f.rise, collar), rise = Math.max(-RISE_MOST, Math.min(RISE_MOST, f.rise));
+    apron(xy[0] + ((f.outX ?? 0) * collar) / mpu, xy[1] - ((f.outY ?? 0) * collar) / mpu, f, z, rise);
     h = Math.imul(h ^ Math.round(z * 10), 16777619);
   }
   // The open cuttings (5.17f, his words: "make sure nothing goes above the ground"): from a portal in to where its
@@ -194,8 +244,9 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
   }
   return out.length
     ? { pins: Float32Array.from(out), widen: widen.length ? Float32Array.from(widen) : null,
-        aprons: aprons.length ? Float32Array.from(aprons) : null, sig: (h >>> 0) || 1 }
-    : { pins: null, widen: null, aprons: null, sig: 0 };
+        aprons: aprons.length ? Float32Array.from(aprons) : null, inside: inside.length ? Float32Array.from(inside) : null,
+        sig: (h >>> 0) || 1 }
+    : { pins: null, widen: null, aprons: null, inside: null, sig: 0 };
 }
 
 const mercX = (lon) => (lon + 180) / 360;

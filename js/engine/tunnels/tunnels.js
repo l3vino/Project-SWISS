@@ -54,6 +54,7 @@ import { fitPoints, fitTube, SHORT, COLLAR_WIDTH } from './fit.js';
 import { boreCut, addAprons, boreMeets } from './cuts.js';
 import { placedCopy, wingOff, WING_SPLAY, WING_LEN } from './placed.js';
 import { railFloors, stationFloor, gradeLimit, steepest } from './junctions.js';
+import { floorKey } from '../vector/portals.js';
 
 const GATHER_MS = 400;
 /* A tube gone from the tiles round the camera (they moved: its open end with them) keeps being drawn until the
@@ -78,6 +79,9 @@ const MATCH = 30, END_MATCH = 60;
 const NEAR = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4];
 const APPROACH = [5, 7, 9, 11, 13, 15, 18, 21, 24];
 const APPROACH_MATCH = 3;
+/* A run's end this close to a portal gives the ways that may cross over it (runs.js `over`, 5.18n: a tube of several
+ * lines comes out of one mouth; within the cells #approachIndex looks in). */
+const OVER_MATCH = 7;
 /* The road in front of a portal: the ground NEAR, each taken back to the portal along the line through the ground
  * to RISE_REACH metres out (its rise out of the portal), their median (a portal mapped a little inside the hillside
  * has its face in the first metres out: under half of them); unless that is NEAR_OVER over the approach's line at
@@ -488,8 +492,10 @@ export class TunnelSet {
     });
     r.rule ??= sectionFor(near, r.kind, r.entry, whole.length);
     // The ground along the whole of it, round its portals and beside it there (a long tube's middle from coarser
-    // tiles: fit.js).
-    const fg = this.#groundFor(`f|${near.key}|${short ? 1 : 0}`, () => fitPoints(near, short, r.rule));
+    // tiles: fit.js), and along the ways that may cross over its portals (5.18n).
+    const overs = near.ends.map((n) => (n.type === TUBE_END.PORTAL ? this.#oversAt(n) : []));
+    const overKey = overs.map((list) => list.map((w) => `${w.line}@${w.points[0].toFixed(6)},${w.points[1].toFixed(6)}`).join(';')).join('/');
+    const fg = this.#groundFor(`f|${near.key}|${short ? 1 : 0}|${overKey}`, () => fitPoints(near, short, r.rule, overs));
     if (fg.state === 'tiles') waiting = true;
     if (waiting) return;
     // 3. The floor by its portals.
@@ -509,7 +515,7 @@ export class TunnelSet {
     // signature: it is fitted again as they come.)
     const form = near.family !== 2 && this.formation ? this.formation.madeNear(r.lonlatBox ??= lineBox(near.points)) : '';
     if (near.family !== 2 && this.formation) r.formKey = form;
-    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}|${form}`;
+    const sig = `${heights[0].toFixed(2)}|${heights[1].toFixed(2)}|${r.entry?.name ?? ''}|${starts.map((v) => v?.toFixed(2) ?? '').join(',')}|${this.trackBed}|${r.railSig ?? ''}|${form}|${overKey}`;
     if (sig === r.sig) return;
     // (One whose mesh is still being made is placed again once that is in: #mesh leaves it unsettled. 5.18h: the
     // Ceneri west tube's stations came while its first mesh was made, and it kept its level floor.)
@@ -1031,6 +1037,26 @@ export class TunnelSet {
     return best;
   }
 
+  /* The ways that may cross over a portal (runs.js `over`, 5.18n): those of every run's end within OVER_MATCH of it,
+   * each once. */
+  #oversAt(end) {
+    const cells = this.#approachIndex(), m = 111320 * Math.cos((end.lat * Math.PI) / 180);
+    const cx = Math.floor(end.lon / APPROACH_CELL), cy = Math.floor(end.lat / APPROACH_CELL);
+    const out = [], seen = new Set();
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        for (const a of cells.get((cx + dx) * 2e6 + cy + dy) ?? []) {
+          if (!a.end.over || Math.hypot((a.lon - end.lon) * m, (a.lat - end.lat) * 111132) > OVER_MATCH) continue;
+          for (const w of a.end.over) {
+            const key = `${w.line}|${w.points[0].toFixed(6)}|${w.points[1].toFixed(6)}`;
+            if (!seen.has(key)) { seen.add(key); out.push(w); }
+          }
+        }
+      }
+    }
+    return out;
+  }
+
   /* The detail tiles' runs' ends with an approach, by cell (APPROACH_CELL degrees): made again when the tiles with
    * tunnels change. */
   #approachIndex() {
@@ -1314,6 +1340,9 @@ export class TunnelSet {
           cut: r.mesh.cuttings?.[e] ? Math.max(0, r.mesh.cuttings[e].len - ((f.start ?? 0) - (f.collar ?? 0))) : 0,
           // Whether its way goes on as a bridge (#portalFloor: its floor on the deck, 5.17x).
           bridge: this.ground.lists.get(`a|${near.family}|${end.lon.toFixed(5)}|${end.lat.toFixed(5)}`)?.bridge === true,
+          // Metres its tube runs on out of it under a way crossing over its mouth, and those ways to hold over its top
+          // (fit.js crossingsOver, 5.18n).
+          collar: f.collar ?? 0, over: f.over ?? null,
         });
       }
     }
@@ -1334,11 +1363,12 @@ export class TunnelSet {
     // the tunnel and its walls, else a line of sight out through the mouth's lower corners runs on under its banks.)
     // (And the open cutting from the portal to where the tube starts: 5.17f.)
     // (And whether its way goes on as a bridge: no level cut or apron of its own under the deck, 5.17x.)
+    // (And how far its tube runs on out of it, and the ways crossing over it to hold over its top: 5.18n.)
     const floors = this.portals.map((q) => ({
       lon: q.lon, lat: q.lat, height: q.h, rise: q.rise, half: q.mouth + q.wall, outX: -q.dirX, outY: -q.dirY, cutting: q.cutting, cut: q.cut,
-      bridge: q.bridge,
+      bridge: q.bridge, collar: q.collar, over: q.over,
     }));
-    const sig = floors.map((q) => `${q.lon.toFixed(6)},${q.lat.toFixed(6)},${q.height.toFixed(2)},${q.rise.toFixed(3)},${q.half.toFixed(2)},${q.outX.toFixed(3)},${q.outY.toFixed(3)},${q.cutting ? q.cutting.length + ':' + q.cutting[q.cutting.length - 2].toFixed(1) : 0},${q.cut.toFixed(1)},${q.bridge ? 1 : 0}`).join('|');
+    const sig = floors.map(floorKey).join('|');
     const changed = sig !== this.floorSig;
     this.floorSig = sig;
     // To the render thread (view.js): the meshes by id in the order drawn, the portals, the bores' meetings over the
@@ -1397,7 +1427,7 @@ export class TunnelSet {
       // its floor was kept under the ground (how far it dipped under the line between its portals, and how much of it
       // still stands out of the ground past its mouths).
       skipped: r.skipped, cover: Number.isFinite(r.fit?.cover) ? r.fit.cover : null,
-      fit: r.fit?.ends.map((f) => f && { face: f.face, collar: f.collar, shell: f.shell, start: f.start }) ?? null,
+      fit: r.fit?.ends.map((f) => f && { face: f.face, collar: f.collar, shell: f.shell, start: f.start, over: f.over }) ?? null,
       trims: r.tube.ends.map((e) => this.trimAt(e, r.tube.family)),
       key: r.tube.key, layer: r.tube.layer,
       // Where it dips under a tube it crosses (#crossings): with which, where along it, how deep.

@@ -35,18 +35,21 @@ const LINK_CUT_A = 1 << 22, LINK_CUT_B = 1 << 23, LINK_END_A = 1 << 24, LINK_END
 /* Metres of the open line kept beyond a portal: its approach, whose ground places the portal's floor (a road
  * turning away right at a portal leaves the straight way out over the slope beside it). */
 const APPROACH_KEEP = 30;
+/* Metres from a portal another way's open line is taken as passing over it (`over`, 5.18n), and the stretch of it kept:
+ * its segments that come that near. */
+const OVER_NEAR = 20;
 
 /**
  * The tunnel runs of a block.
  * @param block  the tile's block (formats/vector-tile.js)
  * @param z, x, y  the tile (Web Mercator)
  * @param kinds  the schema's kinds (schemaTables(schema).kinds): id and family per kind number
- * @returns [{ kind, family, layer, oneway, points: Float64Array [lon, lat, …], ends: [{ type, degree, approach, bridge, pin }, …] }]
+ * @returns [{ kind, family, layer, oneway, points: Float64Array [lon, lat, …], ends: [{ type, degree, approach, bridge, pin, over }, …] }]
  *          (approach: at a PORTAL, the line on beyond it, [lon, lat, …] from the portal out, APPROACH_KEEP metres
  *          at most, as far as the block has it; else null. bridge: whether that line goes on as a bridge. pin: where that line's road is pinned to the tunnel's
  *          floor (vector/portals.js): { x, y } the portal in the block's units, its `line`, `s` the distance along
  *          it there (segmentArcs'), `dir` +1 where the line runs on out of the portal with s growing, -1 falling;
- *          else null)
+ *          else null. over: at a PORTAL, the other ways that may pass over it (5.18n, overOf), else null)
  */
 export function tunnelRuns(block, z, x, y, kinds) {
   if (!block) return [];
@@ -76,6 +79,43 @@ export function tunnelRuns(block, z, x, y, kinds) {
   };
   // How many tunnel segments end at each point (a node's lines share the point exactly; 1/16 unit is ~3 cm).
   const at = (o) => Math.round((f32[o] + 4096) * 16) * 0x40000 + Math.round((f32[o + 1] + 4096) * 16);
+  // Tile units from a point to segment o.
+  const gap = (o, px, py) => {
+    const ax = f32[o], ay = f32[o + 1], ux = f32[o + 2] - ax, uy = f32[o + 3] - ay, L2 = ux * ux + uy * uy;
+    const t = L2 > 0 ? Math.max(0, Math.min(1, ((px - ax) * ux + (py - ay) * uy) / L2)) : 0;
+    return Math.hypot(px - ax - ux * t, py - ay - uy * t);
+  };
+  // The other ways that may pass over a portal at (px, py) (5.18n: fit.js decides which do, by the ground beside the
+  // tube): open segments (not tunnels; not bridges, whose decks pass over by themselves) of a kind shaped into the
+  // ground within OVER_NEAR of it, of lines other than the run's (`own`) and its approach's, that meet neither of those
+  // at a point there (one crossing at a node meets the road on the level). Per line, each stretch of its segments that
+  // come that near: [{ line, kind, half (its kind's level half-width, metres), points: Float64Array [lon, lat, s, …] }],
+  // or null where there is none.
+  const overOf = (px, py, own, approach) => {
+    arcs ??= segmentArcs(block);
+    const reach = OVER_NEAR / metresPerUnit, mpu = f32[BLOCK.metresPerUnit];
+    const meets = new Set();
+    for (const l of new Set([own, approach])) {
+      for (let k = u32[lines + l * 4], en = k + u32[lines + l * 4 + 1]; k < en; k++) { meets.add(at(segs + k * 8)); meets.add(at(segs + k * 8 + 2)); }
+    }
+    let out = null;
+    for (let l = 0, count = u32[BLOCK.lineCount]; l < count; l++) {
+      if (l === own || l === approach) continue;
+      const found = [];
+      let stretch = null, met = false;
+      for (let k = u32[lines + l * 4], en = k + u32[lines + l * 4 + 1]; k < en; k++) {
+        const o = segs + k * 8, attr = u32[o + 6], kind = kinds[ATTR.kind(attr)];
+        if (tunnel(k) || onBridge(k) || !kind?.shape || gap(o, px, py) > reach) { if (stretch) found.push(stretch); stretch = null; continue; }
+        if (meets.has(at(o)) || meets.has(at(o + 2))) met = true;
+        stretch ??= { kind: ATTR.kind(attr), half: kind.width / 2 + kind.bench, points: [lonOf(f32[o]), latOf(f32[o + 1]), arcs[k]] };
+        stretch.points.push(lonOf(f32[o + 2]), latOf(f32[o + 3]), arcs[k] + Math.hypot(f32[o + 2] - f32[o], f32[o + 3] - f32[o + 1]) * mpu);
+      }
+      if (stretch) found.push(stretch);
+      if (met) continue;
+      for (const w of found) (out ??= []).push({ line: l, kind: w.kind, half: w.half, points: Float64Array.from(w.points) });
+    }
+    return out;
+  };
   const tunnelEnds = new Map();
   for (let s = 0, count = u32[BLOCK.segmentCount]; s < count; s++) {
     if (!tunnel(s)) continue;
@@ -164,6 +204,7 @@ export function tunnelRuns(block, z, x, y, kinds) {
           // the line: a typed array's own properties do not cross to the render thread, and 5.17s's never did.)
           d.bridge = Boolean(d.approach) && onBridge(nb);
           d.pin = pinOf(nb, side ? 1 : -1, px, py);
+          d.over = overOf(px, py, l, l);
           return;
         }
         const ox = side ? f32[b + 2] - f32[b] : f32[a] - f32[a + 2], oy = side ? f32[b + 3] - f32[b + 1] : f32[a + 1] - f32[a + 3];
@@ -177,12 +218,14 @@ export function tunnelRuns(block, z, x, y, kinds) {
         d.approach = walk(best.first, best.end, best.seg, best.step, px, py);
         d.bridge = Boolean(d.approach) && onBridge(best.seg);
         d.pin = pinOf(best.seg, best.step, px, py);
+        d.over = overOf(px, py, l, d.pin.line);
       };
       const ends = [endOf(s, 0), endOf(e - 1, 1)];
       ends.forEach((d, side) => {
         d.approach = null;
         d.bridge = false;
         d.pin = null;
+        d.over = null;
         if (d.type === END.PORTAL) approachOf(side, d);
       });
       runs.push({ kind: kind?.id ?? 'unknown', family: kind?.family ?? 'road', layer: ATTR.layer(attr), oneway: ATTR.oneway(attr) !== 0, points, ends });

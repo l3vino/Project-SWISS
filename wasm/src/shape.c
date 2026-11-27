@@ -86,7 +86,14 @@
  * the ground steps to its own over END_SHARP there, so the level does not
  * round on into the hill over the tube (it laid the ground over a tube's
  * first metres flat at the road's height). Side ±3 pins the same way
- * without that: an open cutting's points between its ends.
+ * without that: an open cutting's points between its ends. Side 4 (Stage
+ * 5.18n) is a floor: a way crossing over a tunnel's tube near its portal,
+ * where the bare ground under it has the tunnel's cut (the elevation model
+ * leaves out what bridges it: a road over an underpass's mouth dipped 5.6 m
+ * into it), is held at least at the tube's top over `hold` metres of its
+ * line either way (a floor pin's grade field), eased back onto its own
+ * beyond as a pin is; never lowered, and no junction's height pulls it down
+ * there (it passes over).
  * Given profiles (Stage 5.18d): each tile cut a line's height from its own
  * mesh, and tiles of different levels of detail disagree by up to ~1.7 m,
  * so a railway's track stepped where they met. A railway line now comes
@@ -148,6 +155,7 @@
 #define GIVEN_REACH 1.0           /* metres past a given profile's ends it still answers for (Stage 5.18d) */
 #define GIVEN_TOL 0.05            /* metres a piece's ground may stray from its given height and be left as it is */
 #define PORTAL_HOLD 3.0           /* metres out of a tunnel's portal its pin holds the line, against a junction's height */
+#define FLOOR_SIDE 3.5            /* a pin's side beyond this is a floor (side 4: see the top), ±2 and ±3 a portal's */
 #define END_SHARP 0.3             /* metres beyond a square end the ground is its own again (a line there) */
 #define SPREAD 6.0                /* metres: a face is made steeper (up to FACE_MOST) rather than reach out further than this */
 #define BORDER_FADE 8.0           /* metres from the tile's edge over which the cut gives way to the edge rule */
@@ -856,7 +864,20 @@ static void fit_edges(Tin *T, Prep *P, double grade, double mu, double mv, const
  * their faces blended as the vertex rule blends bands. The change, or 0 with
  * *found clear where no piece reaches. Pieces are taken in any order: each
  * tile lists them in its own. */
-typedef struct { const double *s, *z, *g; const u32 *line; const u8 *portal; u32 n; } Pins;
+typedef struct { const double *s, *z, *g; const u32 *line; const u8 *portal, *floor; u32 n; } Pins;
+
+/* Metres over which a pin `delta` metres off the road eases back onto it (see the top). */
+static double pin_ramp(double delta) {
+  double ramp = m_abs(delta) / PIN_GRADE;
+  return ramp < PIN_RAMP ? PIN_RAMP : ramp > PIN_RAMP_MOST ? PIN_RAMP_MOST : ramp;
+}
+
+/* A floor pin's hold on its line `d` metres along it from the pin (Stage 5.18n): whole over its hold, eased away over
+ * `ramp` beyond. */
+static double floor_weight(double d, double hold, double ramp) {
+  d = m_abs(d) - hold;
+  return d <= 0 ? 1.0 : d >= ramp ? 0.0 : 1.0 - ease01(d / ramp);
+}
 
 static double edge_dz(const Prep *prep, const RoadPiece *pieces, const Pins *pins, const ProfilePoint *given, const u32 *list,
                       u32 from, u32 to, u32 bit, double mu, double mv, double x, double y, double zt, int *found, int *onFace,
@@ -890,23 +911,28 @@ static double edge_dz(const Prep *prep, const RoadPiece *pieces, const Pins *pin
      * at the deck itself no leeway. */
     if (pins->n && P->len > 0 && P->s1 != P->s0) {
       const double perS = (P->s1 - P->s0) / P->len, sl = P->s0 + sv * perS;
-      double wBest = 0, zBest = 0;
+      double wBest = 0, zBest = 0, wFloor = 0, zFloor = zr;
       for (u32 q = 0; q < pins->n; q++) {
         if (pins->line[q] != P->line) continue;
         double road = P->fz[e] + P->fg[e] * ((pins->s[q] - P->s0) / perS), zg;
         if (P->gCount && given_at(given, P->gFirst, P->gCount, pins->s[q], &zg)) road = zg;   /* (as the profile is) */
         const double delta = pins->z[q] - road;
+        /* (A floor lifts the road to it, never lowers it: Stage 5.18n.) */
+        if (pins->floor[q]) {
+          if (!(delta > 0) || !(pins->z[q] > zr)) continue;
+          const double w = floor_weight(sl - pins->s[q], pins->g[q], pin_ramp(delta)), lifted = zr + (pins->z[q] - zr) * w;
+          if (lifted > zFloor) { zFloor = lifted; if (w > wFloor) wFloor = w; }
+          continue;
+        }
         if (m_abs(delta) > PIN_MOST && !pins->portal[q]) continue;
-        double ramp = m_abs(delta) / PIN_GRADE;
-        if (ramp < PIN_RAMP) ramp = PIN_RAMP;
-        if (ramp > PIN_RAMP_MOST) ramp = PIN_RAMP_MOST;
-        const double d = m_abs(sl - pins->s[q]);
+        const double ramp = pin_ramp(delta), d = m_abs(sl - pins->s[q]);
         if (d >= ramp) continue;
         const double w = 1.0 - ease01(d / ramp);
         if (w > wBest) { wBest = w; zBest = pins->z[q] + pins->g[q] * (sl - pins->s[q]); }
       }
       zr += (zBest - zr) * wBest;
       tol *= 1.0 - wBest;
+      if (zFloor > zr) { zr = zFloor; tol *= 1.0 - wFloor; }
     }
     const double lo = zr - tol, hi = zr + tol;
     if (in <= 0) {
@@ -1043,17 +1069,19 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
   for (u32 i = 0; i < count; i++) if (pieces[i].priority < 0) npins++;
   double *pinS = (double *)take(npins * 8u + 8u, &oom), *pinZ = (double *)take(npins * 8u + 8u, &oom), *pinG = (double *)take(npins * 8u + 8u, &oom);
   u32 *pinL = (u32 *)take(npins * 4u + 4u, &oom);
-  u8 *pinP = (u8 *)take(npins + 4u, &oom), *pinQ = (u8 *)take(npins + 4u, &oom);
+  u8 *pinP = (u8 *)take(npins + 4u, &oom), *pinQ = (u8 *)take(npins + 4u, &oom), *pinF = (u8 *)take(npins + 4u, &oom);
   u8 *linePortal = (u8 *)take(nlines + 4u, &oom);   /* a line with a tunnel's portal pin on it */
   if (oom) return (st->status = QM_OOM);
   memset(linePortal, 0, nlines + 4u);
   npins = 0;
   for (u32 i = 0; i < count; i++) {
     if (pieces[i].priority >= 0) continue;
+    const double side = m_abs(pieces[i].half);
     pinS[npins] = pieces[i].s0; pinZ[npins] = pieces[i].s1; pinG[npins] = pieces[i].grade;
     pinL[npins] = lineIndex[(u32)pieces[i].line];
-    pinP[npins] = m_abs(pieces[i].half) > 1.5;     /* a tunnel's portal (see the top) */
-    pinQ[npins] = pinP[npins] && m_abs(pieces[i].half) < 2.5;   /* and a piece ending there ends square */
+    pinF[npins] = side > FLOOR_SIDE;                    /* a floor over a tube (its grade: its hold; see the top) */
+    pinP[npins] = side > 1.5 && !pinF[npins];          /* a tunnel's portal (see the top) */
+    pinQ[npins] = pinP[npins] && side < 2.5;           /* and a piece ending there ends square */
     if (pinP[npins]) linePortal[pinL[npins]] = 1;
     npins++;
   }
@@ -1144,7 +1172,10 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
     if ((worst < LEVEL_MIN || worst < LEVEL_SLOPE * P->half) && givenOff <= GIVEN_TOL && t0 <= 0 && t1 >= 1) {
       int pinned = 0;
       double lo = (P->s0 < P->s1 ? P->s0 : P->s1) - PIN_RAMP_MOST, hi = (P->s0 < P->s1 ? P->s1 : P->s0) + PIN_RAMP_MOST;
-      for (u32 q = 0; q < npins && !pinned; q++) pinned = pinL[q] == P->line && pinS[q] >= lo && pinS[q] <= hi;
+      for (u32 q = 0; q < npins && !pinned; q++) {
+        const double hold = pinF[q] ? pinG[q] : 0;   /* (a floor reaches its hold further) */
+        pinned = pinL[q] == P->line && pinS[q] >= lo - hold && pinS[q] <= hi + hold;
+      }
       if (!pinned) { st->skipped++; P->level = 1; continue; }
     }
     P->used = 1;
@@ -1519,10 +1550,16 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
     double *az = (double *)take(n * 8u + 8u, &oom);
     u8 *held = (u8 *)take(n + 8u, &oom);
     if (oom) return (st->status = QM_OOM);
+    /* (And over a tube, by a floor and as far as it eases back: the line passes over whatever junction lies under it,
+     * Stage 5.18n.) */
     for (u32 i = 0; i < n; i++) {
       az[i] = 1e30;
       held[i] = 0;
-      for (u32 q = 0; q < npins && !held[i]; q++) held[i] = pinP[q] && pinL[q] == best && m_abs(ps[first + i] - pinS[q]) < PORTAL_HOLD;
+      for (u32 q = 0; q < npins && !held[i]; q++) {
+        if (pinL[q] != best) continue;
+        const double d = m_abs(ps[first + i] - pinS[q]);
+        held[i] = pinP[q] ? d < PORTAL_HOLD : pinF[q] && d < pinG[q] + PIN_RAMP;
+      }
     }
     u32 anchored = 0;
     /* (A line with a given profile is not anchored: its heights must be the same in every tile it crosses.) */
@@ -1579,7 +1616,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
     u32 pinned = 0;
     for (u32 i = 0; i < count; i++) {
       const RoadPiece *R = &pieces[i];
-      if (R->priority >= 0 || prep[i].line != best) continue;
+      if (R->priority >= 0 || prep[i].line != best || m_abs(R->half) > FLOOR_SIDE) continue;   /* (floors: below) */
       /* Whether the deck meets this road: its height against the road's
        * own at the joint, or PIN_LOOK metres onto the ground (R->half: +1
        * the ground lies beyond s, -1 before it, 0 not known) against the
@@ -1598,9 +1635,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
         if (m_abs(look) < off) off = m_abs(look);
       }
       if (off > PIN_MOST && !portal) continue;
-      double ramp = m_abs(delta) / PIN_GRADE;
-      if (ramp < PIN_RAMP) ramp = PIN_RAMP;
-      if (ramp > PIN_RAMP_MOST) ramp = PIN_RAMP_MOST;
+      const double ramp = pin_ramp(delta);
       for (u32 k = 0; k < n; k++) {
         double d = m_abs(s[k] - sp);
         if (d >= ramp) continue;
@@ -1632,6 +1667,19 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
         out[i] = base[i] + off;
       }
     }
+    /* Floors (Stage 5.18n, see the top): last, so nothing pulls the line back under the tube's top; each lifts it over
+     * its hold, eased back over a pin's ramp for the most it lifts there. */
+    for (u32 i = 0; i < count; i++) {
+      const RoadPiece *R = &pieces[i];
+      if (R->priority >= 0 || prep[i].line != best || !(m_abs(R->half) > FLOOR_SIDE)) continue;
+      const double sp = R->s0, z = R->s1, hold = R->grade > 0 ? R->grade : 0;
+      double lift = 0;
+      for (u32 k = 0; k < n; k++) if (m_abs(s[k] - sp) <= hold && z - out[k] > lift) lift = z - out[k];
+      if (!(lift > 0)) lift = z - profile_at(L, ps, pz, sp);
+      if (!(lift > 0)) continue;
+      const double ramp = pin_ramp(lift);
+      for (u32 k = 0; k < n; k++) if (z > out[k]) out[k] += (z - out[k]) * floor_weight(s[k] - sp, hold, ramp);
+    }
     L->done = 1;
   }
 
@@ -1662,7 +1710,7 @@ u32 qm_shape(QmMesh *m, const RoadPiece *pieces, u32 count, const ProfilePoint *
    * edges' rules are blended in by how near each is. */
   u32 moved = 0;
   double worstCut = 0, worstFill = 0, worstEdge = 0;
-  const Pins pinSet = { pinS, pinZ, pinG, pinL, pinP, npins };
+  const Pins pinSet = { pinS, pinZ, pinG, pinL, pinP, pinF, npins };
   u8 *recompute = (u8 *)take(T.n + 4u, &oom);
   u8 *faceCode = (u8 *)take(T.n + 4u, &oom);
   double *zNew = (double *)take(T.n * 8u + 8u, &oom);

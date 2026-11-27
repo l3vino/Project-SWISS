@@ -41,7 +41,10 @@
  *     the floor), and how far back the collar's concrete covers the vault
  *     where the ground is lower than it (as thin as the ground over a short
  *     tube leaves room for, so it never stands out of the road over an
- *     underpass).
+ *     underpass);
+ *   - the ways crossing over a portal (5.18n, crossingsOver): the tube runs
+ *     on out of it under one whose level width reaches past it, and each is
+ *     held over the tube's top where it crosses.
  * The terrain is cut exactly along the whole bore (cuts.js, terrain.wgsl):
  * nothing of it is left inside a tube, whatever its tiles' detail.
  * Positions are metres in from the mapped portal (d), out of it negative.
@@ -96,23 +99,37 @@ const MOUTH_MOST = 30, DIP_MOST = 0.12, DIP_PATH = 0.18, EASE = 10, EASE_MARGIN 
 const COVER_RUN = 4, TUBE_LEAST = 3;
 /* The ground over the least box of a kind: its thinnest roof and the soil over it. */
 const LEAST_ROOF = SHELL_THINNEST + OVER_SHELL;
+/* Ways crossing over a portal (5.18n, his words: "the terrain is messed up and roads are not really aligned"): another
+ * line passing over the tube's mouth without meeting its road (runs.js `over`), the bare ground under it having the
+ * tube's cut (the elevation model leaves out what bridges it: by the Ceneri north portal a road over the underpass's
+ * mouth dipped 5.6 m into it). It is over the tube where its ground beyond the tube's walls (the most of SHOULDERS
+ * metres out on each side) stands OVER_LEAST of the tube's height or more over the floor (a street crossing the road
+ * in front on the level does not), crossing at SIN_LEAST (30°) or more. Where its level width reaches out past the
+ * portal as mapped (and lies no more than COLLAR_GAP out of it), the tube runs on under it to COLLAR_PAST beyond that
+ * (its collar), COLLAR_MOST at most; and it is held at least PIN_COVER over the tube's top where it crosses, over the
+ * stretch of its line over the tube's width and HOLD_PAST more either way (shape.c's floors, vector/portals.js). */
+const SHOULDERS = [3, 6, 9, 12], OVER_LEAST = 0.5, SIN_LEAST = 0.5;
+const COLLAR_GAP = 2, COLLAR_PAST = 0.5, COLLAR_MOST = 12, PIN_COVER = 0.3, HOLD_PAST = 1;
 const PATHS = new Set(['path', 'footway', 'steps', 'track', 'trail', 'via_ferrata', 'cycleway']);
 
 /**
  * Where the ground is wanted for a tube's fit: along each portal's axis (from AXIS_OUT out to AXIS_IN in, a metre
  * apart, through the bore's middle), along the whole tube (the bore's middle: each point of a short one, else
- * every ALONG_NEAR metres near a portal and ALONG_FAR beyond, with its ends), and beside the bore near each portal
- * (with its section: SIDES of its half-width either side, every ALONG_NEAR metres up to SIDE_IN in).
+ * every ALONG_NEAR metres near a portal and ALONG_FAR beyond, with its ends), beside the bore near each portal
+ * (with its section: SIDES of its half-width either side, every ALONG_NEAR metres up to SIDE_IN in), and along each way
+ * that may cross over a portal beyond the tube's walls (with its section: SHOULDERS either side, 5.18n).
  * @param tube     the near tube (groups.js)
  * @param short    whether its whole tunnel is short (it must fit under the ground)
  * @param section  its cross-section (sections.js), or null: nothing beside it
+ * @param overs    per end, the ways that may cross over it (runs.js `over`), or null
  * @returns { lonlat: Float64Array [lon, lat, …], axes: [each end's first sample along its axis; -1 none], first (the
  *            tube points' first sample), ks: Int32Array (the tube point of each of those), sides: per end null or
  *            { at (its first sample), ds (metres in of each place, SIDES.length samples a place), ks (the tube point of
- *            each place), xs (metres right of the middle of each sample) }, under: per sample the level its ground
- *            tile is under (Infinity: the finest) }
+ *            each place), xs (metres right of the middle of each sample) }, overs: per end [{ way, at (its first
+ *            sample: SHOULDERS either side, left first) }], under: per sample the level its ground tile is under
+ *            (Infinity: the finest) }
  */
-export function fitPoints(tube, short = false, section = null) {
+export function fitPoints(tube, short = false, section = null, overs = null) {
   const p = tube.points, n = p.length / TUBE_POINT, L = tube.length;
   const out = [], axes = [-1, -1], under = [];
   for (let e = 0; e < 2; e++) {
@@ -160,7 +177,20 @@ export function fitPoints(tube, short = false, section = null) {
     }
     return { at, ds, ks, xs };
   });
-  return { lonlat: Float64Array.from(out), axes, first, ks: Int32Array.from(ks), sides, under };
+  // (Beyond its walls as wide as their concrete may be: COLLAR_WIDTH.)
+  const crossing = [0, 1].map((e) => {
+    if (!section || tube.ends[e].type !== TUBE_END.PORTAL || !overs?.[e]?.length) return [];
+    const list = [], W = sideOf(outlineAt(section, wideOf(section, p[(e ? n - 1 : 0) * TUBE_POINT + 4]))) + COLLAR_WIDTH;
+    for (const way of overs[e]) {
+      const c = crossingOf(tube, e, way, W);
+      if (!c || c.shoulders.some((v) => !Number.isFinite(v))) continue;
+      list.push({ way, at: out.length / 2 });
+      for (const v of c.shoulders) out.push(v);
+      for (let j = 0; j < c.shoulders.length / 2; j++) under.push(Infinity);
+    }
+    return list;
+  });
+  return { lonlat: Float64Array.from(out), axes, first, ks: Int32Array.from(ks), sides, overs: crossing, under };
 }
 
 /**
@@ -183,8 +213,9 @@ export function fitPoints(tube, short = false, section = null) {
  *          collar's concrete's thickness, metres), floorAt (s => the floor kept under the ground), floor: { ss, zs,
  *          dipped (metres the floor went under the line between the portals at most), out (metres of the tube whose
  *          vault stands out of the ground past its mouths) }, ends: per end null (not a portal) or { face, collar (0:
- *          the tube starts at the mapped portal), start (metres in it starts: where the ground covers it), shell (from
- *          the collar), rise, offset, outline } }
+ *          the tube starts at the mapped portal; else metres it runs on out of it, under a way crossing over its mouth:
+ *          5.18n), start (metres in it starts: where the ground covers it), shell (from the collar), rise, offset,
+ *          outline, over (the ways crossing over it to hold over its top: crossingsOver, or null) } }
  */
 export function fitTube({ tube, floorAt, section, clearance, kind = null, short, slopes = [0, 0], pts, heights, starts = [], spine = null, underRails = false }) {
   const p = tube.points, L = tube.length;
@@ -275,13 +306,14 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
     // hole?": the cutting dug from its mouth out, walled and floored in concrete, by the Ceneri base tunnel 17 m). One
     // under a railway's embankment from its portal as mapped too, its concrete over it to the embankment's foot (5.18n:
     // short of where the embankment covered it, an open cut 6 m deep ran 11 m through the embankment beside the outer
-    // track by the Ceneri north portal).
-    f.start = Number.isFinite(cover) && !underRails ? covered[e] : 0;
+    // track by the Ceneri north portal). And one running on out of its portal under a way crossing over its mouth from
+    // its collar (5.18n: the way covers it there).
+    f.start = Number.isFinite(cover) && !underRails && !(f.collar > 0) ? covered[e] : 0;
     f.shell = Math.max(SHELL_LEAST, f.shell - f.start);
     // The terrain's opening from the tube's mouth in (the cutting in front is the road's: vector/portals.js), at
-    // least OPEN_LEAST past it.
+    // least OPEN_LEAST past it (from its collar where it runs on out of the portal: 5.18n).
     const o = f.opening;
-    o.from = f.start;
+    o.from = f.start - f.collar;
     o.depth = Math.min(L, Math.max(o.depth, f.start + OPEN_LEAST));
   }
   // A short tube's concrete runs the whole way (where the ground over it dips under its roof, the roof shows, not
@@ -547,7 +579,108 @@ function portalFit(tube, e, floorAt, sec, slope, collarWidth, pts, heights, spin
   let wide = wideOf(sec, p[o + 4]), slack = 0;
   for (const [d, lat, w] of curve) if (d <= depth) { wide = Math.min(wide, w); slack = Math.max(slack, Math.abs(lat - 0.5 * bend * d * d)); }
   const opening = { from: 0, depth, bend, slack, rise: slope, offset: way.offset, outline: outlineAt(sec, wide) };
-  return { face, collar: 0, shell, rise: slope, offset: way.offset, outline, opening };
+  const { collar, over } = crossingsOver(tube, e, pts, heights, sideOf(outline) + collarWidth, outline,
+    (d) => (d < 0 ? floorOut - slope * d : floorAt(sAt(Math.min(d, L)))), crown + collarWidth + PIN_COVER);
+  return { face, collar, shell, rise: slope, offset: way.offset, outline, opening, over };
+}
+
+/* The ways crossing over a portal (see the top: SHOULDERS ...): its collar (metres the tube runs on out of the portal
+ * under them; 0 none), and each one to hold over the tube, [{ lon, lat (where its line crosses the bore's middle), hold
+ * (metres of its line either way from there), z (the least height there) }]. `W`: the tube's half-width to its walls'
+ * outer faces; `floorIn(d)`: its floor d metres in (out of the portal, rising as the approach does); `top`: metres from
+ * the floor to the least height a way over it is held at. */
+function crossingsOver(tube, e, pts, heights, W, outline, floorIn, top) {
+  let collar = 0;
+  const found = [];
+  for (const { way, at } of pts.overs?.[e] ?? []) {
+    const c = crossingOf(tube, e, way, W);
+    if (!c || c.sin < SIN_LEAST || !(c.dIn > -COLLAR_GAP)) continue;
+    const floor = Math.max(floorIn(c.dA), floorIn(c.dB));
+    // Its ground beyond the walls: the most on each side, the lower side's.
+    let ground = Infinity;
+    for (let side = 0; side < 2; side++) {
+      let most = -Infinity;
+      for (let j = side; j < 2 * SHOULDERS.length; j += 2) { const g = heights[at + j]; if (Number.isFinite(g) && g > most) most = g; }
+      ground = Math.min(ground, most);
+    }
+    if (!(ground - floor >= OVER_LEAST * outline.top)) continue;
+    // Out past the portal as mapped: the tube runs on under it (or, past COLLAR_MOST, not over the tube at all).
+    if (c.dOut < 0) {
+      if (COLLAR_PAST - c.dOut > COLLAR_MOST) continue;
+      collar = Math.max(collar, COLLAR_PAST - c.dOut);
+    }
+    found.push({ lon: c.at[0], lat: c.at[1], hold: c.hold + HOLD_PAST, z: floor + top });
+  }
+  return { collar, over: found.length ? found : null };
+}
+
+/**
+ * A way's line near a portal (runs.js `over`: [lon, lat, s, …], `half` its level half-width) against the tube there
+ * (5.18n), in metres in from the portal (d, out of it negative) and right of the bore's middle (v), the tube `W` metres
+ * either side of it to its walls' outer faces: where its level width lies over the tube's width farthest out and
+ * farthest in (dOut, dIn), how squarely it crosses there (sin: 1 straight across), where its line crosses the tube's
+ * walls (dA, dB: metres in), where it crosses the bore's middle (at: [lon, lat]), the metres of its line from there to
+ * the farther wall (hold), and the points of its line SHOULDERS metres beyond the walls either side ([lon, lat, …], the
+ * left one first each time; its end pieces carried on straight where it stops short). Null where its level width is
+ * nowhere over the tube's width, or it runs along it.
+ */
+export function crossingOf(tube, e, way, W) {
+  const end = tube.ends[e], { inX, inY, rX, rY, offset } = wayIn(tube, e), m = metresLon(end.lat);
+  const P = way.points, n = P.length / 3, hw = way.half ?? 0;
+  if (!(n >= 2)) return null;
+  const ds = new Float64Array(n), vs = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = (P[3 * i] - end.lon) * m, y = (P[3 * i + 1] - end.lat) * M_LAT;
+    ds[i] = x * inX + y * inY;
+    vs[i] = x * rX + y * rY - offset;
+  }
+  let dOut = Infinity, dIn = -Infinity, sin = 1;
+  for (let i = 0; i + 1 < n; i++) {
+    const ld = ds[i + 1] - ds[i], lv = vs[i + 1] - vs[i], l = Math.hypot(ld, lv);
+    if (!(l > 1e-6)) continue;
+    const nd = (-lv / l) * hw, nv = (ld / l) * hw;
+    const band = clipStrip([ds[i] + nd, vs[i] + nv, ds[i + 1] + nd, vs[i + 1] + nv, ds[i + 1] - nd, vs[i + 1] - nv, ds[i] - nd, vs[i] - nv], W);
+    if (!band.length) continue;
+    for (let k = 0; k < band.length; k += 2) { dOut = Math.min(dOut, band[k]); dIn = Math.max(dIn, band[k]); }
+    sin = Math.min(sin, Math.abs(lv) / l);
+  }
+  if (!(dIn >= dOut)) return null;
+  // The point of its line at piece i, f along it (past its ends where f is outside 0..1).
+  const pointAt = (i, f) => ({ lon: P[3 * i] + (P[3 * i + 3] - P[3 * i]) * f, lat: P[3 * i + 1] + (P[3 * i + 4] - P[3 * i + 1]) * f,
+    s: P[3 * i + 2] + (P[3 * i + 5] - P[3 * i + 2]) * f, d: ds[i] + (ds[i + 1] - ds[i]) * f });
+  // Where its line is v right of the bore's middle: the first such, else carried on straight past its nearer end.
+  const atV = (v) => {
+    for (let i = 0; i + 1 < n; i++) {
+      const a = vs[i] - v, b = vs[i + 1] - v;
+      if (a === b || a * b > 0) continue;
+      return pointAt(i, a / (a - b));
+    }
+    const i = Math.abs(vs[0] - v) < Math.abs(vs[n - 1] - v) ? 0 : n - 2, lv = vs[i + 1] - vs[i];
+    return Math.abs(lv) > 1e-6 ? pointAt(i, (v - vs[i]) / lv) : null;
+  };
+  const a = atV(-W), b = atV(W), mid = atV(0);
+  if (!a || !b || !mid) return null;
+  const shoulders = [];
+  for (const x of SHOULDERS) for (const v of [-(W + x), W + x]) { const q = atV(v); shoulders.push(q ? q.lon : NaN, q ? q.lat : NaN); }
+  return { dOut, dIn, sin, dA: a.d, dB: b.d, at: [mid.lon, mid.lat], hold: Math.max(Math.abs(a.s - mid.s), Math.abs(b.s - mid.s)), shoulders };
+}
+
+/* A polygon ([d, v, …]) clipped to the strip |v| <= W (Sutherland and Hodgman's, against each side): [d, v, …], empty
+ * where none of it lies inside. */
+function clipStrip(poly, W) {
+  let pts = poly;
+  for (const sign of [1, -1]) {
+    const out = [], n = pts.length / 2;
+    for (let k = 0; k < n; k++) {
+      const j = (k + 1) % n, ad = pts[2 * k], av = pts[2 * k + 1], bd = pts[2 * j], bv = pts[2 * j + 1];
+      const aIn = sign * av <= W, bIn = sign * bv <= W;
+      if (aIn) out.push(ad, av);
+      if (aIn !== bIn) { const t = (sign * W - av) / (bv - av); out.push(ad + (bd - ad) * t, sign * W); }
+    }
+    pts = out;
+    if (!pts.length) break;
+  }
+  return pts;
 }
 
 /* The bore's middle along the spine from an end, against the straight way in: [d (metres in), metres right of the

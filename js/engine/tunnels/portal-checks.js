@@ -86,7 +86,8 @@ export class PortalChecks {
       const m = 111320 * Math.cos((end.lat * Math.PI) / 180), ox = end.dirX, oy = end.dirY;
       const a = Math.min(LIFT_ACROSS, f.half / 2);
       let lo = Infinity, hi = -Infinity, sum = 0, n = 0, known = true;
-      for (const d of LIFT_OUT) {
+      // (Out of its collar where its tube runs on out of the portal under a way crossing over it: 5.18n.)
+      for (const d of LIFT_OUT.map((x) => x + (f.collar ?? 0))) {
         for (const c of [-a, 0, a]) {
           // Out of the portal (ox, oy), and right of that (oy, -ox).
           const lon = end.lon + (ox * d + oy * c) / m, lat = end.lat + (oy * d - ox * c) / 111132;
