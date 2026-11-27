@@ -2151,11 +2151,12 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     return { family, kind, length: L, points: pts, tracks: 1,
       ends: [{ type: TUBE_END.PORTAL, lon: 8.6, lat: 46.5, dirX: -1, dirY: 0 }, { type: far, lon: 8.6 + L / M, lat: 46.5, dirX: 1, dirY: 0 }] };
   };
-  const fitOn = (tube, ground, short = true, floorAt = () => 500, overs = null) => {
+  const fitOn = (tube, ground, short = true, floorAt = () => 500, overs = null, bareGround = null) => {
     const kind = kinds.find((k) => k?.id === tube.kind), sec = sectionFor(tube, kind, null);
     const pts = fitPoints(tube, short, sec, overs), heights = new Float64Array(pts.lonlat.length / 2);
-    for (let i = 0; i < heights.length; i++) heights[i] = 500 + ground((pts.lonlat[2 * i] - 8.6) * M, (pts.lonlat[2 * i + 1] - 46.5) * 111132);
-    return fitTube({ tube, floorAt, section: sec, clearance: clearanceFor(tube, kind), kind, short, pts, heights });
+    const at = (fn) => Float64Array.from(heights, (_, i) => 500 + fn((pts.lonlat[2 * i] - 8.6) * M, (pts.lonlat[2 * i + 1] - 46.5) * 111132));
+    heights.set(at(ground));
+    return fitTube({ tube, floorAt, section: sec, clearance: clearanceFor(tube, kind), kind, short, pts, heights, bare: bareGround ? at(bareGround) : null });
   };
   // The underpass's collar's concrete as thin as the 5 m of ground over it leaves room for (0.4 m: its top 0.2 m under
   // the road over it); it starts 2 m in, where the embankment rising from its toes covers its roof, its concrete and
@@ -2241,6 +2242,28 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
         floorPinC && Math.abs(floorPinC[2] - 20) < 0.05 && floorPinC[5] === 5 && Math.abs(floorPinC[3] - topOver) < 0.01 &&
         pinsC.inside?.length === INSIDE_FLOATS && pinsC.inside[0] === 3 && Math.abs(pinsC.inside[1] - 100) < 1e-3 && Math.abs(pinsC.inside[2] - 101.5) < 1e-3 &&
         streetFit.section && !streetFit.ends[1].collar && !streetFit.ends[1].over)) problems.push(crossLine);
+  // (5.18o) The same tube fitted under 6 m of embankment as shaped (tunnels.js #underRails) where the bare ground has none
+  // over it (its bridges left out of the elevation model): ground filled in over it, each portal its half, a line along
+  // its middle at the height it was fitted under (its concrete and 0.2 m of soil over its vault), from its mouth in; on
+  // ground that is there, none. And its portal's apron from the bore's middle 2.6 m right of the road's line, as wide as
+  // the tube; the road widened only to the tube's near wall (vector/portals.js).
+  const fillFit = fitOn(crossTube, () => 6, true, () => 500, null, () => 0), keptFit = fitOn(crossTube, () => 6, true, () => 500, null, () => 6);
+  const fw = fillFit.section ? outlineAt(fillFit.section) : null, fillTop = fw ? 500 + fw.crown + fillFit.collarWidth + 0.2 : 0;
+  const fl0 = fillFit.ends[0].fill?.[0], fl1 = fillFit.ends[1].fill?.[0], fp = fl0?.points ?? [];
+  const fillDs = [], fillZs = [];
+  for (let k = 0; k + 5 <= fp.length; k += 5) { fillDs.push(fp[k + 3]); fillZs.push(fp[k + 2]); }
+  const sideC = fw ? fw.half + fillFit.collarWidth : 0, midOff = 2.6;
+  const midFloor = { ...floorC, collar: 0, over: null, side: sideC, half: sideC + midOff, midLat: 46.5 - midOff / 111132, midLon: crossTube.ends[1].lon };
+  const pinsM = portalPinsFor([runC], [midFloor], tileC);
+  const [mxC, myC] = unitsC(midFloor.midLon, midFloor.midLat), A = pinsM.aprons ?? [];
+  const fillLine = `ground filled in over a box the bare ground has none over: ${fillDs.length} points ${fillDs[0]?.toFixed(1)}..${fillDs[fillDs.length - 1]?.toFixed(1)} m in at ` +
+    `${Math.min(...fillZs).toFixed(2)}..${Math.max(...fillZs).toFixed(2)} m (fitted under ${fillTop.toFixed(2)}), from its mouth ${fl0?.mouth}, the other half ${fl1 ? 'too' : 'not'}; ` +
+    `with the ground there ${keptFit.ends[0].fill ? 'filled' : 'none'}; the apron ${A.length ? `${Math.hypot(A[0] - mxC, A[1] - myC).toFixed(2)} units from the bore's middle, ${A[6].toFixed(2)} m either side` : 'none'}, ` +
+    `the road widened to ${pinsM.widen ? pinsM.widen[3].toFixed(2) : 'none'} m`;
+  if (!(fl0 && fl1 && fl0.mouth && fl1.mouth && fillDs.length === 11 && Math.abs(fillDs[0]) < 1e-6 && Math.abs(fillDs[10] - 20) < 1e-6 &&
+        fillZs.every((z) => Math.abs(z - fillTop) < 0.01) && !keptFit.ends[0].fill && !keptFit.ends[1].fill &&
+        A.length === 10 && Math.hypot(A[0] - mxC, A[1] - myC) < 0.01 && Math.abs(A[6] - (sideC + 0.3)) < 1e-3 &&
+        pinsM.widen && Math.abs(pinsM.widen[3] - (sideC - midOff + 0.3)) < 0.01)) problems.push(fillLine);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).
@@ -2283,7 +2306,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const fitLine = `fit: underpass a ${under.section?.height.toFixed(1)} m box from ${u0?.start} and ${u1?.start} m in (collar ${u0?.collar}), its concrete ${under.collarWidth?.toFixed(2)} m thick; ` +
     `no room: ${none.section ? 'built' : 'not built'}; hillside face ${h0?.face} m in, the tube from ${h0?.start?.toFixed(2)} m in, its outer side ${h0?.shell} m (the hill falling away to its right: ${f0?.shell} m); 3 m of ground over a 60 m one: ${flat.section ? `a ${flat.section.height.toFixed(1)} m box` : 'not built'}, 2.7 m: ${low.section ? 'built' : 'not built'}, a path under 2.6 m: ${pathUnder.section ? `a ${pathUnder.section.height.toFixed(1)} m box` : 'not built'}; ` +
     `under a valley the floor dips ${dip.floor.dipped.toFixed(1)} m (vault ≥ ${worstCover.toFixed(2)} m under the ground, ≤ ${(worstGrade * 100).toFixed(2)}%); ` +
-    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}; ${crossLine}`;
+    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}; ${crossLine}; ${fillLine}`;
   console.log(`tunnels: stand-in ${rail.length} railway tube, ${t0?.tracks} tracks, ${t0?.length.toFixed(0)} m, ends ${t0?.ends.map((e) => e.type).join('/')}; ` +
     `Göschenen ${gRuns.length} runs → ${gTubes.length} tubes; ${meshLine}; ${fitLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
@@ -2607,7 +2630,21 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
     faceLine = `an end opening into another 5° off its line: its last ${(meshStep * 100).toFixed(0)} cm face ${meshWay.toFixed(2)}°, its room on ${(pastLong * 100).toFixed(1)} cm past it at ${pastWay.toFixed(2)}° (its last piece ${pieceWay.toFixed(2)}°)`;
     if (!(Math.abs(meshWay - 5) < 0.05 && Math.abs(meshStep - 0.05) < 1e-6 && Math.abs(pastLong - 0.05) < 0.002 && Math.abs(pastWay - 5) < 0.2 && Math.abs(pieceWay - 5) < 0.2)) problems.push(faceLine);
   }
-  console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine}; ${endLine}; ${faceLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
+  // (5.18o) A tube running on 3 m out of its north portal (its collar, under a way crossing over its mouth: fit.js): the
+  // terrain's bore runs on to the collar, a point of its own (it stopped at the portal as mapped, and the ground stood in
+  // the tube's last metres), what is built a metre past it.
+  let collarLine = '';
+  {
+    const { ecefToGeodetic } = await import('../js/core/math.js');
+    const n = 21, p = new Float64Array(n * POINT_DOUBLES);
+    for (let k = 0; k < n; k++) { const s = 2 * k, o = k * POINT_DOUBLES; p[o] = LON; p[o + 1] = LAT + s / my; p[o + 2] = 500; p[o + 3] = s; p[o + 8] = 1; }
+    const c = boreCut({ points: p, count: n }, sec, [{ type: P, dirX: 0, dirY: -1, collar: 0, rise: 0 }, { type: P, dirX: 0, dirY: 1, collar: 3, rise: 0.02 }]);
+    const north = (i) => { const q = ecefToGeodetic([c.points[i * 9], c.points[i * 9 + 1], c.points[i * 9 + 2]]); return [(q.lat - LAT) * my - 40, q.height - 500]; };
+    const [lastOut, lastUp] = north(c.count - 1), [terrainOut, terrainUp] = north(c.count - 2);
+    collarLine = `a tube running on 3 m out of its portal: the terrain's bore to ${terrainOut.toFixed(2)} m out (${terrainUp.toFixed(2)} m up), what is built to ${lastOut.toFixed(2)} m`;
+    if (!(c.flags[c.count - 1] & 2) || c.flags[c.count - 2] & 2 || Math.abs(terrainOut - 3) > 0.01 || Math.abs(terrainUp - 0.06) > 0.005 || Math.abs(lastOut - 4) > 0.01) problems.push(collarLine);
+  }
+  console.log(`tubes meeting: ${pairs.join(', ')} (opening into: ${meetMains}); pieces main ${sMain.length / CUT_FLOATS}, branch ${sBranch.length / CUT_FLOATS}, side by side ${sA.length / CUT_FLOATS}/${sB.length / CUT_FLOATS}; ${joinLine}; ${trimLine}; ${endLine}; ${faceLine}; ${collarLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;
 }
 

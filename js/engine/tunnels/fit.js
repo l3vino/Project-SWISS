@@ -203,7 +203,8 @@ export function fitPoints(tube, short = false, section = null, overs = null) {
  *   kind       its kind (the schema's: its grade and id)
  *   short      whether its whole tunnel is short
  *   slopes     per end: its portal's approach's rise a metre out
- *   pts        fitPoints' answer for it; heights: the ground at each (NaN not known; null: none known)
+ *   pts        fitPoints' answer for it; heights: the ground at each (NaN not known; null: none known); bare: the bare
+ *              ground at each, where `heights` has more in it (a railway's embankment as shaped: tunnels.js #underRails)
  *   spine      its spine as its mesh runs (mesh.js spineOf), for each portal's opening's curve
  *   starts     per end: metres in its tube starts at most (tunnels.js trimStarts: the ground as cut covers it there),
  *              or undefined
@@ -216,9 +217,10 @@ export function fitPoints(tube, short = false, section = null, overs = null) {
  *          vault stands out of the ground past its mouths) }, ends: per end null (not a portal) or { face, collar (0:
  *          the tube starts at the mapped portal; else metres it runs on out of it, under a way crossing over its mouth:
  *          5.18n), start (metres in it starts: where the ground covers it), shell (from the collar), rise, offset,
- *          outline, over (the ways crossing over it to hold over its top: crossingsOver, or null) } }
+ *          outline, over (the ways crossing over it to hold over its top: crossingsOver, or null), fill (a short tube's:
+ *          the ground filled in over its half from this portal, fillOver, or null) } }
  */
-export function fitTube({ tube, floorAt, section, clearance, kind = null, short, slopes = [0, 0], pts, heights, starts = [], spine = null, underRails = false }) {
+export function fitTube({ tube, floorAt, section, clearance, kind = null, short, slopes = [0, 0], pts, heights, bare = null, starts = [], spine = null, underRails = false }) {
   const p = tube.points, L = tube.length;
   const none = (cover) => ({ section: null, cover, collarWidth: COLLAR_WIDTH, ends: [null, null] });
   // The ground along the tube, in order: metres along, the ground, how wide the bore is there.
@@ -318,8 +320,13 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
     o.depth = Math.min(L, Math.max(o.depth, f.start + OPEN_LEAST));
   }
   // A short tube's concrete runs the whole way (where the ground over it dips under its roof, the roof shows, not
-  // the tunnel through it from above); two collars' outer sides along a short tube end where they would meet.
-  if (Number.isFinite(cover)) for (const f of ends) if (f) f.shell = L + f.collar;
+  // the tunnel through it from above); two collars' outer sides along a short tube end where they would meet. And the
+  // ground filled in over it where the bare ground has none (5.18o: fillOver).
+  if (Number.isFinite(cover)) {
+    for (const f of ends) if (f) f.shell = L + f.collar;
+    const fills = fillOver(tube, ends, fitted, (s) => outlineAt(sec, wideAt(ss, wides, s)).crown + collarWidth + OVER_SHELL, pts, bare ?? heights);
+    for (const e of [0, 1]) if (ends[e]) ends[e].fill = fills[e];
+  }
   if (ends[0] && ends[1]) {
     // (Along the tube as built: from where it starts at each portal.)
     const a = ends[0].shell - ends[0].collar, b = ends[1].shell - ends[1].collar, built = L - ends[0].start - ends[1].start;
@@ -331,6 +338,77 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
   }
   return { section: sec, cover, collarWidth, floorAt: fitted, floor, ends };
   }
+}
+
+/* The ground filled in over a short tube where the bare ground has none (5.18o, his words: "a tunnel is digging through
+ * the ground, not removing the one on top and sides"): by the Ceneri north portal the elevation model has the railway's
+ * bridges over an underpass left out, its ground at the floor the whole 40 m, and the box's concrete stood grey between
+ * the tracks. Along the tube as built (from each mouth: its collar out of the portal, or where it starts in), wherever
+ * the bare ground over its middle or beside it (fitPoints) lies FILL_TOL or more under its vault, its concrete and
+ * OVER_SHELL of soil (`topAt(s)`, metres over the floor), those places merged over gaps up to FILL_GAP and run on to a
+ * mouth that near: lines of ground at that height along the bore's middle, a point every FILL_STEP metres, each portal
+ * its half (vector/portals.js lays them, of the least priority: every way over the tube keeps its own level). Per end
+ * null or [{ points: Float64Array [lon, lat, height, metres in, rise, …] from the portal in, mouth: whether it starts at
+ * the mouth }, …].
+ */
+const FILL_TOL = 0.1, FILL_GAP = 6, FILL_STEP = 2;
+function fillOver(tube, ends, floorAt, topAt, pts, bare) {
+  const p = tube.points, n = p.length / TUBE_POINT, L = tube.length;
+  if (!bare || !pts) return [null, null];
+  // The floor out of a portal (to its collar) rises as its approach does.
+  const floorOf = (s) => (s < 0 ? floorAt(0) - (ends[0]?.rise ?? 0) * s : s > L ? floorAt(L) + (ends[1]?.rise ?? 0) * (s - L) : floorAt(s));
+  const heightOf = (s) => floorOf(s) + topAt(Math.min(L, Math.max(0, s)));
+  const mouth = ends.map((f, e) => (f ? (f.collar > 0 ? -f.collar : f.start) : 0));
+  const from = mouth[0], to = L - mouth[1];
+  // The places whose ground is short of it: over the middle, beside it, and out to a collar along the portal's axis.
+  const low = [];
+  const look = (s, g) => { if (s >= from - 1e-6 && s <= to + 1e-6 && Number.isFinite(g) && g < heightOf(s) - FILL_TOL) low.push(s); };
+  for (let i = 0; i < pts.ks.length; i++) look(p[pts.ks[i] * TUBE_POINT + 2], bare[pts.first + i]);
+  for (let e = 0; e < 2; e++) {
+    const side = pts.sides?.[e];
+    if (side) for (let i = 0; i < side.ds.length; i++) for (let j = 0; j < SIDES.length; j++) look(e ? L - side.ds[i] : side.ds[i], bare[side.at + i * SIDES.length + j]);
+    if (ends[e]?.collar > 0 && pts.axes[e] >= 0) for (let d = -Math.ceil(ends[e].collar); d < 0; d++) look(e ? L - d : d, bare[pts.axes[e] + d + AXIS_OUT]);
+  }
+  if (!low.length) return [null, null];
+  low.sort((a, b) => a - b);
+  const runs = [];
+  for (const s of low) {
+    const last = runs[runs.length - 1];
+    if (last && s - last[1] <= FILL_GAP) last[1] = s; else runs.push([s, s]);
+  }
+  for (const r of runs) { if (r[0] - from <= FILL_GAP) r[0] = from; if (to - r[1] <= FILL_GAP) r[1] = to; }
+  // The bore's middle at s (out past an end along its way out).
+  const midAt = (s) => {
+    if (s <= 0 || s >= L) {
+      const e = s <= 0 ? 0 : 1, end = tube.ends[e], q = middleOf(p, n, e ? n - 1 : 0), d = e ? s - L : -s;
+      return [q[0] + (end.dirX * d) / metresLon(q[1]), q[1] + (end.dirY * d) / M_LAT];
+    }
+    let k = 0;
+    while (k + 2 < n && p[(k + 1) * TUBE_POINT + 2] < s) k++;
+    const a = middleOf(p, n, k), b = middleOf(p, n, k + 1), s0 = p[k * TUBE_POINT + 2], s1 = p[(k + 1) * TUBE_POINT + 2];
+    const f = s1 > s0 ? (s - s0) / (s1 - s0) : 0;
+    return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+  };
+  // Each portal its half, from the portal in.
+  return [0, 1].map((e) => {
+    if (!ends[e]) return null;
+    const lines = [];
+    for (const [a, b] of runs) {
+      const lo = e ? Math.max(a, L / 2) : a, hi = e ? b : Math.min(b, L / 2);
+      if (hi - lo < 0.5) continue;
+      const ss = [];
+      for (let s = lo; s < hi; s += FILL_STEP) ss.push(s);
+      ss.push(hi);
+      if (e) ss.reverse();
+      const out = [];
+      for (const s of ss) {
+        const [lon, lat] = midAt(s), d = e ? L - s : s;
+        out.push(lon, lat, heightOf(s), d, (heightOf(e ? s - 1 : s + 1) - heightOf(e ? s + 1 : s - 1)) / 2);
+      }
+      lines.push({ points: Float64Array.from(out), mouth: (e ? hi : lo) === (e ? to : from) });
+    }
+    return lines.length ? lines : null;
+  });
 }
 
 /* How wide the bore is at s (the samples' ratios, the nearest; 1 where none). */

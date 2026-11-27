@@ -531,7 +531,8 @@ export class TunnelSet {
     const known = fg.state === 'done' ? rails?.heights ?? fg.heights : null;
     r.fit = fitTube({
       tube: near, floorAt: r.baseAt, section: r.rule, clearance: clearanceFor(near, r.kind), kind: r.kind, short, slopes,
-      pts: fg.pts, heights: known, starts, spine: known ? spineOf(near, r.rule.half) : null, underRails: rails?.raised > 0,
+      pts: fg.pts, heights: known, bare: fg.state === 'done' ? fg.heights : null, starts, spine: known ? spineOf(near, r.rule.half) : null,
+      underRails: rails?.raised > 0,
     });
     r.floorAt = r.fit.floorAt ?? r.baseAt;
     if (!r.fit.section) {
@@ -1343,6 +1344,10 @@ export class TunnelSet {
           // Metres its tube runs on out of it under a way crossing over its mouth, and those ways to hold over its top
           // (fit.js crossingsOver, 5.18n).
           collar: f.collar ?? 0, over: f.over ?? null,
+          // The bore's middle at the mouth and its half-width there to its walls' outer faces (the level cut in front of
+          // it as wide as it, where it is), and a short tube's ground filled in over it (fit.js fillOver; 5.18o).
+          mid: [end.lon - (end.dirY * f.offset) / (111320 * Math.cos((end.lat * Math.PI) / 180)), end.lat + (end.dirX * f.offset) / 111132],
+          side: f.outline.half + (r.fit.collarWidth ?? 0), fill: f.fill ?? null,
         });
       }
     }
@@ -1364,9 +1369,10 @@ export class TunnelSet {
     // (And the open cutting from the portal to where the tube starts: 5.17f.)
     // (And whether its way goes on as a bridge: no level cut or apron of its own under the deck, 5.17x.)
     // (And how far its tube runs on out of it, and the ways crossing over it to hold over its top: 5.18n.)
+    // (And the bore's middle and half-width at its mouth, and the ground filled in over a short tube: 5.18o.)
     const floors = this.portals.map((q) => ({
       lon: q.lon, lat: q.lat, height: q.h, rise: q.rise, half: q.mouth + q.wall, outX: -q.dirX, outY: -q.dirY, cutting: q.cutting, cut: q.cut,
-      bridge: q.bridge, collar: q.collar, over: q.over,
+      bridge: q.bridge, collar: q.collar, over: q.over, midLon: q.mid[0], midLat: q.mid[1], side: q.side, fill: q.fill,
     }));
     const sig = floors.map(floorKey).join('|');
     const changed = sig !== this.floorSig;

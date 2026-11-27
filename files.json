@@ -1,5 +1,5 @@
 {
- "build": "5.18n",
+ "build": "5.18o",
  "files": [
   "css/ui.css",
   "js/adapters/adapter.js",

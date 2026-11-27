@@ -52,6 +52,17 @@
  * under it having the tube's cut (his words on 5.18n: "the terrain is messed
  * up and roads are not really aligned": a road over an underpass's mouth by
  * the Ceneri north portal dipped 5.6 m into it).
+ *
+ * Since 5.18o (his words: "a tunnel is digging through the ground, not
+ * removing the one on top and sides"): the apron runs out from the bore's
+ * middle, which may lie off the road's line, and is as wide as the tube; a
+ * road out of it is widened only as far as the tube's near wall from its
+ * line (the far wall's reach mirrored onto the near side dug 9.5 m either
+ * side of the line by the Ceneri north portal, into the grass banks). And
+ * where the bare ground over a short tube has none over it (the elevation
+ * model leaves out bridges: over that underpass it reads the floor the whole
+ * 40 m), lines of ground fill it in at the height the tube was fitted under
+ * (tunnels/fit.js fillOver), of the least priority.
  */
 
 import { PIN_FLOATS, PIN_BELOW } from './bridges.js';
@@ -102,7 +113,9 @@ export const PORTAL_NEAR = 200;
 export function floorKey(q) {
   return `${q.lon.toFixed(6)},${q.lat.toFixed(6)},${q.height.toFixed(2)},${q.rise.toFixed(3)},${q.half.toFixed(2)},${q.outX.toFixed(3)},${q.outY.toFixed(3)},` +
     `${q.cutting ? q.cutting.length + ':' + q.cutting[q.cutting.length - 2].toFixed(1) : 0},${q.cut.toFixed(1)},${q.bridge ? 1 : 0},` +
-    `${(q.collar ?? 0).toFixed(2)},${(q.over ?? []).map((c) => `${c.lon.toFixed(6)}/${c.lat.toFixed(6)}/${c.hold.toFixed(1)}/${c.z.toFixed(2)}`).join(';')}`;
+    `${(q.collar ?? 0).toFixed(2)},${(q.over ?? []).map((c) => `${c.lon.toFixed(6)}/${c.lat.toFixed(6)}/${c.hold.toFixed(1)}/${c.z.toFixed(2)}`).join(';')},` +
+    `${(q.side ?? 0).toFixed(2)},${(q.midLon ?? 0).toFixed(6)},${(q.midLat ?? 0).toFixed(6)},` +
+    `${(q.fill ?? []).map((l) => `${l.points.length}:${l.points[2].toFixed(2)}:${l.points[l.points.length - 2].toFixed(1)}:${l.mouth ? 1 : 0}`).join(';')}`;
 }
 
 /**
@@ -119,18 +132,16 @@ export function floorKey(q) {
  */
 export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0, mpu: 1 }) {
   if (!floors.length) return { pins: null, widen: null, aprons: null, inside: null, sig: 0 };
-  const out = [], widen = [], aprons = [], inside = [], aproned = new Set(), held = new Set(), mpu = tile.mpu || 1;
+  const out = [], widen = [], aprons = [], inside = [], held = new Set(), mpu = tile.mpu || 1;
   let h = 2166136261, own = 0;
   // A portal's apron: straight out of it (the block's y runs south), a line of its own (from the top of the block's
-  // line numbers down), pinned at the portal.
-  const apron = (x, y, f, z, rise) => {
-    if (!(f.half > 0) || !Number.isFinite(f.outX) || !Number.isFinite(f.outY)) return;
+  // line numbers down), `half` either side, pinned at the portal.
+  const apron = (x, y, f, z, rise, half) => {
+    if (!(half > 0) || !Number.isFinite(f.outX) || !Number.isFinite(f.outY)) return;
     const line = 65535 - own++;
-    aprons.push(x, y, x + (f.outX * APRON) / mpu, y - (f.outY * APRON) / mpu, 0, APRON, f.half + WIDEN_MARGIN, APRON_GRADE,
-      APRON_PRIORITY, line);
+    aprons.push(x, y, x + (f.outX * APRON) / mpu, y - (f.outY * APRON) / mpu, 0, APRON, half, APRON_GRADE, APRON_PRIORITY, line);
     out.push(x, y, 0, z, rise, line, 2);
-    aproned.add(f);
-    h = Math.imul(h ^ Math.round(x * 7 + y * 13 + f.outX * 100 + f.outY * 10000), 16777619);
+    h = Math.imul(h ^ Math.round(x * 7 + y * 13 + f.outX * 100 + f.outY * 10000 + half * 10), 16777619);
   };
   const n = 2 ** tile.z, E = tile.extent;
   const unitsOf = (lon, lat) => [(mercX(lon) * n - tile.x) * E, (mercY(lat) * n - tile.y) * E];
@@ -179,8 +190,8 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
       const k = e ? run.points.length - 2 : 0, lon = run.points[k], lat = run.points[k + 1];
       const m = 111320 * Math.cos((lat * Math.PI) / 180);
       // (A line ending in a portal beside its middle, as the other tracks into a wide one, 5.17q: pinned to its floor
-      // too, his words: "connect the tracks correctly even if the data is not there"; its middle's line alone widens
-      // the portal's way out and lays its apron.)
+      // too, his words: "connect the tracks correctly even if the data is not there"; each widened to the tube's near
+      // wall, 5.18o.)
       let best = null, gap = Infinity;
       for (const f of floors) {
         const d = Math.hypot((f.lon - lon) * m, (f.lat - lat) * 111132);
@@ -202,26 +213,27 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
       h = Math.imul(h ^ Math.round(z * 10), 16777619);
       if (collar > 0) inside.push(pin.line, Math.min(pin.s, ps), Math.max(pin.s, ps));
       if (best.over) for (const c of best.over) holdOver(c, run.ends[e].over);
-      if (cut > 0) { aproned.add(best); continue; }
       // (Onto a bridge, 5.17x: the deck carries the way out of the portal, the ground under it is left as it is.)
-      if (best.bridge) { aproned.add(best); continue; }
-      if (!(best.half > 0) || gap > SAME_PORTAL) continue;
-      widen.push(pin.line, ps, pin.dir, best.half + WIDEN_MARGIN);
-      h = Math.imul(h ^ Math.round(best.half * 10), 16777619);
-      apron(px, py, best, z, rise);
+      if (cut > 0 || best.bridge) continue;
+      // Its level cut widened as far as the tube's near wall from its line (5.18o: the bore's middle may lie off it, and
+      // the far wall's reach mirrored onto the near side dug 9.5 m either side of the line by the Ceneri north portal,
+      // past the box into the grass banks); the apron below spans the tube's whole width.
+      const sideways = (lon - (best.midLon ?? best.lon)) * m * (best.outY ?? 0) - (lat - (best.midLat ?? best.lat)) * 111132 * (best.outX ?? 0);
+      const reach = (best.side ?? best.half ?? 0) - Math.abs(sideways);
+      if (!(reach > 0)) continue;
+      widen.push(pin.line, ps, pin.dir, reach + WIDEN_MARGIN);
+      h = Math.imul(h ^ Math.round(reach * 10), 16777619);
     }
   }
-  // The portals in this tile whose road does not run on out of them as a line (none mapped, or one stopping short
-  // of the portal: the Bellinzona underpass's steps end 1.9 m from its west portal): their aprons from their own
-  // place, pinned the same way.
+  // Each portal in this tile (whether a road runs on out of it as a line or not: the Bellinzona underpass's steps end
+  // 1.9 m from its west portal): its apron straight out of its mouth from the bore's middle (5.18o: from its road's line,
+  // 2.6 m off the middle by the Ceneri north portal), as wide as the tube to its walls' outer faces, pinned the same way.
   for (const f of floors) {
-    if (aproned.has(f) || f.cut > 0 || f.bridge) continue;
-    const xy = mine(f);
-    if (!xy) continue;
+    if (f.cut > 0 || f.bridge || !mine(f)) continue;
     // (From where its tube ends: 5.18n.)
-    const collar = Math.max(0, f.collar ?? 0);
+    const collar = Math.max(0, f.collar ?? 0), [mx, my] = unitsOf(f.midLon ?? f.lon, f.midLat ?? f.lat);
     const z = pinnedRoadAt(f.height, f.rise, collar), rise = Math.max(-RISE_MOST, Math.min(RISE_MOST, f.rise));
-    apron(xy[0] + ((f.outX ?? 0) * collar) / mpu, xy[1] - ((f.outY ?? 0) * collar) / mpu, f, z, rise);
+    apron(mx + ((f.outX ?? 0) * collar) / mpu, my - ((f.outY ?? 0) * collar) / mpu, f, z, rise, (f.side ?? f.half ?? 0) + WIDEN_MARGIN);
     h = Math.imul(h ^ Math.round(z * 10), 16777619);
   }
   // The open cuttings (5.17f, his words: "make sure nothing goes above the ground"): from a portal in to where its
@@ -240,6 +252,26 @@ export function portalPinsFor(runs, floors, tile = { z: 0, x: 0, y: 0, extent: 0
       if (last) aprons.push(last[0], last[1], x, y, last[2], c[k + 3], f.half + WIDEN_MARGIN, APRON_GRADE, APRON_PRIORITY, line);
       last = [x, y, c[k + 3]];
       h = Math.imul(h ^ Math.round(x * 7 + y * 13 + c[k + 2] * 10), 16777619);
+    }
+  }
+  // The ground filled in over a short tube where the bare ground has none (5.18o: tunnels/fit.js fillOver), from its
+  // portal in: lines of their own as wide as the tube to its walls' outer faces (and WIDEN_MARGIN), their ground pinned at
+  // their height at every point, square at the mouth; of the least priority (every way over the tube keeps its own
+  // level); laid by every tile they come near, as the cuttings are.
+  for (const f of floors) {
+    const half = (f.side ?? f.half ?? 0) + WIDEN_MARGIN;
+    for (const fill of f.fill ?? []) {
+      const c = fill.points;
+      if (c.length < 2 * CUTTING_FLOATS || !(half > WIDEN_MARGIN) || !reaches(c, half + CUTTING_MARGIN)) continue;
+      const line = 65535 - own++;
+      let last = null;
+      for (let k = 0; k < c.length; k += CUTTING_FLOATS) {
+        const [x, y] = unitsOf(c[k], c[k + 1]);
+        out.push(x, y, c[k + 3], c[k + 2], c[k + 4], line, k === 0 && fill.mouth ? 2 : 3);
+        if (last) aprons.push(last[0], last[1], x, y, last[2], c[k + 3], half, APRON_GRADE, APRON_PRIORITY, line);
+        last = [x, y, c[k + 3]];
+        h = Math.imul(h ^ Math.round(x * 7 + y * 13 + c[k + 2] * 10), 16777619);
+      }
     }
   }
   return out.length

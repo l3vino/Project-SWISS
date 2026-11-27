@@ -13,8 +13,8 @@
  * there (sections.js outlineAt: as wide as the mesh makes the bore at that
  * point), the mesh's own points (mesh.js meshPoints: straight between them,
  * as the mesh is), run on out of each portal to its collar and CUT_PAST
- * beyond (a wall the portal stands in; not the terrain: the road in front
- * of the portal is its own). Each tile drawn (passes/terrain.js, the
+ * beyond (a wall the portal stands in; the terrain to the collar only: the
+ * road in front of the portal is its own). Each tile drawn (passes/terrain.js, the
  * terrain at every level; passes/buildings.js) gets the segments of it that
  * reach its box, in its own frame (cutsInFrame): the terrain's in a slot of
  * its own (bore.wgsl, 5.17k), the buildings' in a storage buffer shared by
@@ -88,11 +88,18 @@ export function boreCut(mp, sec, ends, coverAt = null) {
     flags.push(flag);
   };
   const middle = (k) => middleOf(p, n, k);
-  // Out of a portal: along its way out to the collar and CUT_PAST on, the floor rising as the approach does.
-  const beyond = (k, end) => {
+  // Out of a portal: along its way out to the collar and CUT_PAST on, the floor rising as the approach does. Where the
+  // tube runs on out of its portal (its collar, under a way crossing over its mouth: fit.js), the terrain's bore runs on
+  // to the collar, a point of its own, kept (5.18o: it stopped at the portal as mapped, and the ground stood in the
+  // tube's last 4 m by the Ceneri north portal, seen through the mouth and walked through). `first`: end 0's (the points
+  // run from it in).
+  const beyond = (k, end, first) => {
     if (end.type !== MESH_END.PORTAL) return;
-    const o = k * POINT_DOUBLES, [lon, lat] = middle(k), d = Math.max(0, end.collar ?? 0) + CUT_PAST;
-    put(lon + (end.dirX * d) / metresLon(lat), lat + (end.dirY * d) / M_LAT, p[o + 2] + (end.rise ?? 0) * d, p[o + 8], FLAG_BEYOND);
+    const o = k * POINT_DOUBLES, [lon, lat] = middle(k), collar = Math.max(0, end.collar ?? 0);
+    const at = (d, flag) => put(lon + (end.dirX * d) / metresLon(lat), lat + (end.dirY * d) / M_LAT, p[o + 2] + (end.rise ?? 0) * d, p[o + 8], flag);
+    if (!first && collar > 0) at(collar, FLAG_END);
+    at(collar + CUT_PAST, FLAG_BEYOND);
+    if (first && collar > 0) at(collar, FLAG_END);
   };
   // A portal's first piece: END_PIECE in from its middle along its line's first stretch, its floor and width as the
   // mesh has them there.
@@ -117,7 +124,7 @@ export function boreCut(mp, sec, ends, coverAt = null) {
   };
   const flagOf = (k) => ((joined[0] && k <= 1) || (joined[1] && k >= n - 2) ? FLAG_END : covered(k) > DEEP ? FLAG_DEEP : 0);
   if (joined[0]) past(0, 1);
-  beyond(0, ends[0]);
+  beyond(0, ends[0], true);
   for (let k = 0; k < n; k++) {
     const [lon, lat] = middle(k), o = k * POINT_DOUBLES;
     // (The last portal's first piece before its own point.)
@@ -125,7 +132,7 @@ export function boreCut(mp, sec, ends, coverAt = null) {
     put(lon, lat, p[o + 2], p[o + 8], flagOf(k));
     if (k === 0) inward(0, 1, ends[0]);
   }
-  beyond(n - 1, ends[1]);
+  beyond(n - 1, ends[1], false);
   if (joined[1]) past(n - 1, n - 2);
   const thinned = thin(out, flags);
   const points = Float64Array.from(thinned.points), count = points.length / CUT_DOUBLES;
