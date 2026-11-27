@@ -2277,7 +2277,10 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   // its middle at the height it was fitted under (its concrete and 0.2 m of soil over its vault), from its mouth in; on
   // ground that is there, none. And its portal's apron from the bore's middle 2.6 m right of the road's line, as wide as
   // the tube; the road widened only to the tube's near wall (vector/portals.js).
+  // (5.18q) Bare ground 0.5 m short of that height (in Locarno the square over its underpasses lay 0.1 to 0.6 m under
+  // it): none either (only where the ground over its middle is 1 m short or more).
   const fillFit = fitOn(crossTube, () => 6, true, () => 500, null, () => 0), keptFit = fitOn(crossTube, () => 6, true, () => 500, null, () => 6);
+  const nearFit = fitOn(crossTube, () => 6, true, () => 500, null, () => 5.5);
   const fw = fillFit.section ? outlineAt(fillFit.section) : null, fillTop = fw ? 500 + fw.crown + fillFit.collarWidth + 0.2 : 0;
   const fl0 = fillFit.ends[0].fill?.[0], fl1 = fillFit.ends[1].fill?.[0], fp = fl0?.points ?? [];
   const fillDs = [], fillZs = [];
@@ -2288,12 +2291,22 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const [mxC, myC] = unitsC(midFloor.midLon, midFloor.midLat), A = pinsM.aprons ?? [];
   const fillLine = `ground filled in over a box the bare ground has none over: ${fillDs.length} points ${fillDs[0]?.toFixed(1)}..${fillDs[fillDs.length - 1]?.toFixed(1)} m in at ` +
     `${Math.min(...fillZs).toFixed(2)}..${Math.max(...fillZs).toFixed(2)} m (fitted under ${fillTop.toFixed(2)}), from its mouth ${fl0?.mouth}, the other half ${fl1 ? 'too' : 'not'}; ` +
-    `with the ground there ${keptFit.ends[0].fill ? 'filled' : 'none'}; the apron ${A.length ? `${Math.hypot(A[0] - mxC, A[1] - myC).toFixed(2)} units from the bore's middle, ${A[6].toFixed(2)} m either side` : 'none'}, ` +
+    `with the ground there ${keptFit.ends[0].fill ? 'filled' : 'none'}, 0.5 m short ${nearFit.ends[0].fill || nearFit.ends[1].fill ? 'filled' : 'none'}; ` +
+    `the apron ${A.length ? `${Math.hypot(A[0] - mxC, A[1] - myC).toFixed(2)} units from the bore's middle, ${A[6].toFixed(2)} m either side` : 'none'}, ` +
     `the road widened to ${pinsM.widen ? pinsM.widen[3].toFixed(2) : 'none'} m`;
   if (!(fl0 && fl1 && fl0.mouth && fl1.mouth && fillDs.length === 11 && Math.abs(fillDs[0]) < 1e-6 && Math.abs(fillDs[10] - 20) < 1e-6 &&
-        fillZs.every((z) => Math.abs(z - fillTop) < 0.01) && !keptFit.ends[0].fill && !keptFit.ends[1].fill &&
+        fillZs.every((z) => Math.abs(z - fillTop) < 0.01) && !keptFit.ends[0].fill && !keptFit.ends[1].fill && nearFit.section && !nearFit.ends[0].fill && !nearFit.ends[1].fill &&
         A.length === 10 && Math.hypot(A[0] - mxC, A[1] - myC) < 0.01 && Math.abs(A[6] - (sideC + 0.3)) < 1e-3 &&
         pinsM.widen && Math.abs(pinsM.widen[3] - (sideC - midOff + 0.3)) < 0.01)) problems.push(fillLine);
+  // (5.18q) An underpass's mouth in a cut gets the portals' concrete (tunnels.js cuttingFrom: headwall, splayed wing walls,
+  // walls stepping down with the ground) where the ground out of it stands 1.5 m or more over its floor: 3 m, one 8 m
+  // long; 1 m, none (a long tunnel's from 0.4 m, as since 5.17v).
+  const { cuttingFrom } = await import('../js/engine/tunnels/tunnels.js');
+  const cutFrame = { lon: 8.6, lat: 46.5, h: 500, te: 1, tn: 0, dir: 1, off: 0, wide: 1, rise: 0 };
+  const cutGround = (rise) => Float64Array.from({ length: 11 * 3 + 9 }, (_, i) => (i < 33 ? 500 + Math.max(0, rise - Math.floor(i / 3) * 0.75) : 500 + rise));
+  const cutIn = cuttingFrom(cutFrame, 5, cutGround(3), 1.5), cutLow = cuttingFrom(cutFrame, 5, cutGround(1), 1.5), cutLong = cuttingFrom(cutFrame, 5, cutGround(1), 0.4);
+  const underpassCutLine = `an underpass's mouth in a cut 3 m deep ${cutIn ? `walled ${cutIn.len} m out (headwall ${Math.max(...cutIn.head).toFixed(2)} m)` : 'not walled'}, 1 m deep ${cutLow ? 'walled' : 'not walled'} (a long tunnel's ${cutLong ? `${cutLong.len} m` : 'none'})`;
+  if (!(cutIn && cutIn.len === 8 && !cutLow && cutLong)) problems.push(underpassCutLine);
   // 3 m of ground over a 60 m one: the least box of its kind (2.5 m inside, 0.25 m of concrete and 0.2 m of soil over
   // it: 5.17h; 5.17f and g found no ground over their 2.8 m one and dug an open cutting the whole way). 2.7 m: no
   // tube at all, the way runs in the open (tunnels.js openWays).
@@ -2336,7 +2349,7 @@ console.log('arena used', (ex.arena_used() / 1024).toFixed(1), 'KB for a', N * N
   const fitLine = `fit: underpass a ${under.section?.height.toFixed(1)} m box from ${u0?.start} and ${u1?.start} m in (collar ${u0?.collar}), its concrete ${under.collarWidth?.toFixed(2)} m thick; ` +
     `no room: ${none.section ? 'built' : 'not built'}; hillside face ${h0?.face} m in, the tube from ${h0?.start?.toFixed(2)} m in, its outer side ${h0?.shell} m (the hill falling away to its right: ${f0?.shell} m); 3 m of ground over a 60 m one: ${flat.section ? `a ${flat.section.height.toFixed(1)} m box` : 'not built'}, 2.7 m: ${low.section ? 'built' : 'not built'}, a path under 2.6 m: ${pathUnder.section ? `a ${pathUnder.section.height.toFixed(1)} m box` : 'not built'}; ` +
     `under a valley the floor dips ${dip.floor.dipped.toFixed(1)} m (vault ≥ ${worstCover.toFixed(2)} m under the ground, ≤ ${(worstGrade * 100).toFixed(2)}%); ` +
-    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}; ${crossLine}; ${fillLine}`;
+    `to a dead end under a town ${(500 - stEnd).toFixed(1)} m down; ${underLine}; ${crossLine}; ${fillLine}; ${underpassCutLine}`;
   console.log(`tunnels: stand-in ${rail.length} railway tube, ${t0?.tracks} tracks, ${t0?.length.toFixed(0)} m, ends ${t0?.ends.map((e) => e.type).join('/')}; ` +
     `Göschenen ${gRuns.length} runs → ${gTubes.length} tubes; ${impliedLine}; ${meshLine}; ${fitLine} — ${problems.length ? `WRONG: ${problems.join('; ')}` : 'as built'}`);
   if (problems.length) process.exitCode = 1;

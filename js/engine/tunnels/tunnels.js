@@ -106,9 +106,12 @@ const CUT_WALL = 0.5, CUT_AGAIN_MS = 250;
 /* Since 5.17v (his words on 5.17u: "now it looks too strange"): as the real portals by Giubiasco, short wing walls
  * splayed WING_SPLAY (tan 30°) off the way either side over their first WING_LEN metres (a whole number of CUT_STEPs;
  * tunnel.c WING_LEN), then along it, each one's top in straight runs through the ground's heights along it, never under
- * one and at most CUT_SLACK over one (topLine: it steps down where the ground does), out to CUT_MOST at most; only
- * railways' and road tunnels CUT_ROAD_LEAST long or more (no concrete at an underpass). */
-const CUT_SLACK = 0.6, CUT_ROAD_LEAST = 150;
+ * one and at most CUT_SLACK over one (topLine: it steps down where the ground does), out to CUT_MOST at most. A road's
+ * tunnel under CUT_ROAD_LEAST (an underpass) has one only where the ground out of its mouth stands UNDERPASS_CUT or more
+ * over its floor: its road in a cut (5.18q, his screenshots: by Camorino a box under the motorway's embankment had
+ * cuttings dug into its slope, and in Locarno the sunken roads under the square ran between jagged terrain walls; 5.17u
+ * put concrete at every road underpass, those in level ground too). */
+const CUT_SLACK = 0.6, CUT_ROAD_LEAST = 150, UNDERPASS_CUT = 1.5;
 const CUT_THICK = CUT_WALL * Math.hypot(1, WING_SPLAY);   // a wing wall's thickness across the way
 const GROUND_LEVEL = 17;
 const LEAST_LEVEL = 12;
@@ -1178,7 +1181,8 @@ export class TunnelSet {
     for (let e = 0; e < 2; e++) {
       const fe = f[e];
       if (near.ends[e].type !== TUBE_END.PORTAL || !fe || mp.count < 2) continue;
-      if (near.family !== 2 && !(near.length >= CUT_ROAD_LEAST)) continue;
+      // (An underpass's only where its road runs in a cut, 5.18q.)
+      const least = near.family === 2 || near.length >= CUT_ROAD_LEAST ? CUT_ENDS : UNDERPASS_CUT;
       const g = cuttingFrame(mp, e, fe.collar ?? 0, fe.rise ?? 0);
       const half = outlineAt(sec, g.wide).half + cw + CUT_OUT;
       const key = `k|${portalKey(near.ends[e], near.family)}|${g.lon.toFixed(6)},${g.lat.toFixed(6)},${half.toFixed(1)}`;
@@ -1188,7 +1192,7 @@ export class TunnelSet {
         if (!(r.grounds ??= []).includes(gr)) r.grounds.push(gr);
         continue;
       }
-      if (gr.state === 'done' && gr.heights) out[e] = cuttingFrom(g, half, gr.heights);
+      if (gr.state === 'done' && gr.heights) out[e] = cuttingFrom(g, half, gr.heights, least);
     }
     return waiting ? null : out;
   }
@@ -1895,15 +1899,15 @@ function cuttingPoints(g, half) {
   return pts;
 }
 
-/* A cutting from the ground at cuttingPoints': none where the ground out of the collar is not CUT_ENDS over the floor
- * along its middle; else out to where it comes down to that along its middle and both walls (CUT_MOST at most); each
- * wall's top in straight runs through the ground along its outer face (CUT_OVER over it, topLine: never under it, so the
- * terrain's edge never stands open over a wall), meeting the headwall's at its root, its foot under the ground there
- * (under the floor at the least: where the ground falls away beside it, nothing is open under it); the headwall's top
- * through the ground behind its face. */
-function cuttingFrom(g, half, H) {
+/* A cutting from the ground at cuttingPoints': none where the ground out of the collar is not `least` (CUT_ENDS; an
+ * underpass's UNDERPASS_CUT) over the floor along its middle; else out to where it comes down to CUT_ENDS along its
+ * middle and both walls (CUT_MOST at most); each wall's top in straight runs through the ground along its outer face
+ * (CUT_OVER over it, topLine: never under it, so the terrain's edge never stands open over a wall), meeting the
+ * headwall's at its root, its foot under the ground there (under the floor at the least: where the ground falls away
+ * beside it, nothing is open under it); the headwall's top through the ground behind its face. */
+export function cuttingFrom(g, half, H, least = CUT_ENDS) {
   const steps = CUT_MOST / CUT_STEP, over = (i, k) => H[i * 3 + k] - (g.h + g.rise * i * CUT_STEP);
-  if (!(over(0, 0) >= CUT_ENDS)) return null;
+  if (!(over(0, 0) >= least)) return null;
   let last = steps;
   for (let i = 1; i <= steps; i++) if (!(Math.max(over(i, 0), over(i, 1), over(i, 2)) >= CUT_ENDS)) { last = i; break; }
   const n = last + 1, tops = new Float32Array(2 * n), feet = new Float32Array(2 * n), head = new Float32Array(HEAD_N);

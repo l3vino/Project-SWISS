@@ -344,14 +344,16 @@ export function fitTube({ tube, floorAt, section, clearance, kind = null, short,
  * the ground, not removing the one on top and sides"): by the Ceneri north portal the elevation model has the railway's
  * bridges over an underpass left out, its ground at the floor the whole 40 m, and the box's concrete stood grey between
  * the tracks. Along the tube as built (from each mouth: its collar out of the portal, or where it starts in), wherever
- * the bare ground over its middle or beside it (fitPoints) lies FILL_TOL or more under its vault, its concrete and
- * OVER_SHELL of soil (`topAt(s)`, metres over the floor), those places merged over gaps up to FILL_GAP and run on to a
- * mouth that near: lines of ground at that height along the bore's middle, a point every FILL_STEP metres, each portal
- * its half (vector/portals.js lays them, of the least priority: every way over the tube keeps its own level). Per end
+ * the bare ground over its middle (fitPoints; out to a collar along the portal's axis) lies FILL_SHORT or more under
+ * its vault, its concrete and OVER_SHELL of soil (`topAt(s)`, metres over the floor), those places merged over gaps up to
+ * FILL_GAP and run on to a mouth that near: lines of ground at that height along the bore's middle, a point every
+ * FILL_STEP metres, each portal its half (vector/portals.js lays them, of the least priority: every way over the tube
+ * keeps its own level). Nowhere the ground covers it (5.18q: in Locarno the square over its underpasses lay 0.1 to 0.6 m
+ * under that height, lower still beside the boxes, and ground filled in at it stood in strips over the square). Per end
  * null or [{ points: Float64Array [lon, lat, height, metres in, rise, …] from the portal in, mouth: whether it starts at
  * the mouth }, …].
  */
-const FILL_TOL = 0.1, FILL_GAP = 6, FILL_STEP = 2;
+const FILL_SHORT = 1, FILL_GAP = 3, FILL_STEP = 2;
 function fillOver(tube, ends, floorAt, topAt, pts, bare) {
   const p = tube.points, n = p.length / TUBE_POINT, L = tube.length;
   if (!bare || !pts) return [null, null];
@@ -360,13 +362,11 @@ function fillOver(tube, ends, floorAt, topAt, pts, bare) {
   const heightOf = (s) => floorOf(s) + topAt(Math.min(L, Math.max(0, s)));
   const mouth = ends.map((f, e) => (f ? (f.collar > 0 ? -f.collar : f.start) : 0));
   const from = mouth[0], to = L - mouth[1];
-  // The places whose ground is short of it: over the middle, beside it, and out to a collar along the portal's axis.
+  // The places whose ground is short of it: over the middle, and out to a collar along the portal's axis.
   const low = [];
-  const look = (s, g) => { if (s >= from - 1e-6 && s <= to + 1e-6 && Number.isFinite(g) && g < heightOf(s) - FILL_TOL) low.push(s); };
+  const look = (s, g) => { if (s >= from - 1e-6 && s <= to + 1e-6 && Number.isFinite(g) && g < heightOf(s) - FILL_SHORT) low.push(s); };
   for (let i = 0; i < pts.ks.length; i++) look(p[pts.ks[i] * TUBE_POINT + 2], bare[pts.first + i]);
   for (let e = 0; e < 2; e++) {
-    const side = pts.sides?.[e];
-    if (side) for (let i = 0; i < side.ds.length; i++) for (let j = 0; j < SIDES.length; j++) look(e ? L - side.ds[i] : side.ds[i], bare[side.at + i * SIDES.length + j]);
     if (ends[e]?.collar > 0 && pts.axes[e] >= 0) for (let d = -Math.ceil(ends[e].collar); d < 0; d++) look(e ? L - d : d, bare[pts.axes[e] + d + AXIS_OUT]);
   }
   if (!low.length) return [null, null];
